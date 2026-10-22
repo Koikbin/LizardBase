@@ -13,3 +13,6 @@ build&run/
 *.apk
 *.aab
 Recordings/
+# Too large for GitHub (>100MB)
+Assets/Models/2地形2.obj
+Assets/Models/2地形2.obj.meta
