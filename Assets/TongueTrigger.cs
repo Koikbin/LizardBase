@@ -7,7 +7,13 @@ public class TongueTrigger : MonoBehaviour
     public float maxLength = 1.5f;
     public float catchDistance = 0.15f;
 
+    [Header("輸入來源")]
+    public BlowoutDepthProbe depthInput;   // 拖 DepthProbe
+    public bool useDepth = true;           // 取消勾選就回到扳機
+    [Range(0f, 30f)] public float smoothing = 12f; // 0 = 不平滑，越大越跟手但越抖
+
     Transform caught;
+    float smoothed;
 
     Vector3 CenterOf(Transform t)
     {
@@ -18,9 +24,21 @@ public class TongueTrigger : MonoBehaviour
         return b.center;
     }
 
+    float ReadInput()
+    {
+        if (useDepth && depthInput != null)
+        {
+            float raw = depthInput.Length01;
+            if (smoothing <= 0f) { smoothed = raw; return raw; }
+            smoothed = Mathf.Lerp(smoothed, raw, 1f - Mathf.Exp(-smoothing * Time.deltaTime));
+            return smoothed;
+        }
+        return OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
+    }
+
     void Update()
     {
-        float t = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
+        float t = ReadInput();
         transform.localScale = new Vector3(1f, 1f, Mathf.Max(0.001f, t * maxLength));
 
         if (caught == null)
