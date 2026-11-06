@@ -12,3 +12,8 @@ build&run/
 *.slnx
 *.apk
 *.aab
+Recordings/
+
+# 超過 GitHub 100MB 上限
+/Assets/Models/2地形2.obj
+/Assets/Models/2地形2.obj.meta
