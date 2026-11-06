@@ -1,151 +1,176 @@
 using UnityEngine;
 
+/// 手抓住表面後，手相對身體移動多少，身體就往反方向移動多少。
+/// 一般表面（地面）：手碰到就抓住，只能水平爬行。
+/// Tag 為 Climbable 的表面（牆）：手碰到並按住 Grip 才抓住，可以往任何方向爬，抓住時不受重力影響，放開 Grip 才會放手。
+[RequireComponent(typeof(CharacterController))]
 public class LizardLocomotion : MonoBehaviour
 {
+    private const string ClimbableTag = "Climbable";
+
     [Header("References")]
     [SerializeField] private CharacterController characterController;
+    [SerializeField] private Transform trackingSpace;
     [SerializeField] private Transform leftHandAnchor;
     [SerializeField] private Transform rightHandAnchor;
     [SerializeField] private Transform cameraTransform;
 
-    [Header("Locomotion Settings")]
-    [SerializeField] private float speedMultiplier = 4f;
+    [Header("Grab")]
+    [Tooltip("手距離表面多近會抓住（公尺）")]
+    [SerializeField] private float grabRadius = 0.12f;
+    [Tooltip("手距離地面多遠會放開（公尺），要比 Grab Radius 大，避免在邊界反覆抓放")]
+    [SerializeField] private float releaseRadius = 0.18f;
+    [SerializeField] private LayerMask surfaceMask = ~0;
+
+    [Header("Movement")]
+    [Tooltip("手移動 1 公尺時，身體移動幾公尺")]
+    [SerializeField] private float pullGain = 1f;
+    [Tooltip("手速超過這個值（公尺/秒）視為追蹤跳動，該幀不移動")]
+    [SerializeField] private float maxHandSpeed = 6f;
+    [Tooltip("在地面上能否往視線後方移動。關閉時，手貼地往前伸不會把身體往後推")]
+    [SerializeField] private bool allowBackwardOnGround = false;
     [SerializeField] private float gravity = -9.8f;
-    [SerializeField] private float pullThreshold = 0.3f;   // 往後拉的速度門檻
-    [SerializeField] private float reachThreshold = 0.2f;  // 往前伸的速度門檻
-    [SerializeField] private float momentum = 0.85f;        // 推進力衰減（0~1，越大滑越遠）
 
     [Header("Debug")]
-    [SerializeField] private bool useKeyboardTest = false;
+    [SerializeField] private bool logGrabEvents = true;
 
-    // 每隻手的狀態
-    private enum HandState { Idle, Reaching, Pulling }
-    private HandState leftState  = HandState.Idle;
-    private HandState rightState = HandState.Idle;
-
-    private Vector3 prevLeftPos;
-    private Vector3 prevRightPos;
-    private Vector3 currentVelocity = Vector3.zero; // 角色當前推進速度
-    private float verticalVelocity  = 0f;
-    private bool isInitialized      = false;
-
-    void Start()
+    private class Hand
     {
-        StartCoroutine(InitNextFrame());
+        public string name;
+        public Transform anchor;
+        public Vector3 previousLocalPosition;
+        public bool hasPreviousPosition;
+        public bool isGrabbing;
+        public bool onClimbable;
     }
 
-    private System.Collections.IEnumerator InitNextFrame()
+    private readonly Collider[] overlapResults = new Collider[16];
+    private Hand leftHand;
+    private Hand rightHand;
+    private float verticalVelocity;
+
+    public bool IsClimbing => (leftHand != null && leftHand.onClimbable)
+                           || (rightHand != null && rightHand.onClimbable);
+
+    private void Awake()
     {
-        yield return null;
-        prevLeftPos  = leftHandAnchor.position;
-        prevRightPos = rightHandAnchor.position;
-        isInitialized = true;
+        leftHand = new Hand { name = "左手", anchor = leftHandAnchor };
+        rightHand = new Hand { name = "右手", anchor = rightHandAnchor };
     }
 
-    void Update()
+    private void OnEnable()
     {
-        if (!isInitialized) return;
+        verticalVelocity = 0f;
+        ResetHand(leftHand);
+        ResetHand(rightHand);
+    }
 
-        // ── 重力 ──
-        if (characterController.isGrounded)
+    private void OnDisable()
+    {
+        ResetHand(leftHand);
+        ResetHand(rightHand);
+    }
+
+    private void Update()
+    {
+        if (Time.deltaTime <= 0f) return;
+
+        bool leftGrip = OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.LTouch);
+        bool rightGrip = OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.RTouch);
+        Tick(Time.deltaTime, leftGrip, rightGrip);
+    }
+
+    private void Tick(float deltaTime, bool leftGrip, bool rightGrip)
+    {
+        UpdateGrab(leftHand, leftGrip);
+        UpdateGrab(rightHand, rightGrip);
+
+        Vector3 leftMove = CalculateBodyMove(leftHand, deltaTime);
+        Vector3 rightMove = CalculateBodyMove(rightHand, deltaTime);
+
+        // 兩手都抓住時採用移動較多的那隻，這樣放著不動的手不會讓另一隻手的拉動減半
+        Vector3 bodyMove = leftMove.sqrMagnitude >= rightMove.sqrMagnitude ? leftMove : rightMove;
+
+        if (IsClimbing)
+            verticalVelocity = 0f;
+        else if (characterController.isGrounded)
             verticalVelocity = -1f;
         else
-            verticalVelocity += gravity * Time.deltaTime;
+            verticalVelocity += gravity * deltaTime;
 
-        if (useKeyboardTest)
-        {
-            KeyboardTest();
-            return;
-        }
-
-        // ── 計算雙手這幀速度 ──
-        Vector3 leftVel  = (leftHandAnchor.position  - prevLeftPos)  / Time.deltaTime;
-        Vector3 rightVel = (rightHandAnchor.position - prevRightPos) / Time.deltaTime;
-        prevLeftPos  = leftHandAnchor.position;
-        prevRightPos = rightHandAnchor.position;
-
-        // ── 相機方向 ──
-        Vector3 camForward = Vector3.ProjectOnPlane(cameraTransform.forward, Vector3.up).normalized;
-
-        // ── 偵測每隻手的動作 ──
-        ProcessHand(leftVel,  camForward, ref leftState,  "左手");
-        ProcessHand(rightVel, camForward, ref rightState, "右手");
-
-        // ── 推進力衰減（模擬摩擦力）──
-        currentVelocity *= momentum;
-        if (currentVelocity.magnitude < 0.01f)
-            currentVelocity = Vector3.zero;
-
-        // ── 移動角色 ──
-        Vector3 finalMove = currentVelocity + Vector3.up * verticalVelocity;
-        characterController.Move(finalMove * Time.deltaTime);
-
-        // Debug
-        if (currentVelocity.magnitude > 0.01f)
-            Debug.Log($"爬行速度: {currentVelocity.magnitude:F2} | 左手:{leftState} 右手:{rightState}");
+        characterController.Move(bodyMove + Vector3.up * (verticalVelocity * deltaTime));
     }
 
-    private void ProcessHand(Vector3 handVel, Vector3 camForward, ref HandState state, string handName)
+    private void UpdateGrab(Hand hand, bool gripHeld)
     {
-        // 把手速度投影到相機前方軸（正 = 往前伸，負 = 往後拉）
-        float forwardComponent = Vector3.Dot(handVel, camForward);
+        float radius = hand.isGrabbing ? releaseRadius : grabRadius;
+        FindSurfaces(hand.anchor.position, radius, out bool touchingGround, out bool touchingClimbable);
 
-        switch (state)
+        // 抓住牆後只要 Grip 還按著就不會放手，即使手暫時離開牆面
+        bool onClimbable = gripHeld && (touchingClimbable || hand.onClimbable);
+        bool isGrabbing = onClimbable || touchingGround;
+
+        if (logGrabEvents && (isGrabbing != hand.isGrabbing || onClimbable != hand.onClimbable))
+            Debug.Log(isGrabbing ? $"{hand.name} 抓住（{(onClimbable ? "牆面" : "地面")}）" : $"{hand.name} 放開");
+
+        hand.isGrabbing = isGrabbing;
+        hand.onClimbable = onClimbable;
+    }
+
+    private void FindSurfaces(Vector3 position, float radius, out bool touchingGround, out bool touchingClimbable)
+    {
+        touchingGround = false;
+        touchingClimbable = false;
+        int count = Physics.OverlapSphereNonAlloc(position, radius, overlapResults, surfaceMask, QueryTriggerInteraction.Ignore);
+
+        for (int i = 0; i < count; i++)
         {
-            case HandState.Idle:
-                // 手往前伸 → 進入 Reaching 狀態
-                if (forwardComponent > reachThreshold)
-                {
-                    state = HandState.Reaching;
-                    Debug.Log($"{handName} 往前伸（抓地）");
-                }
-                break;
+            Collider surface = overlapResults[i];
+            if (surface.transform.IsChildOf(transform)) continue;
 
-            case HandState.Reaching:
-                // 手開始往後拉 → 進入 Pulling 狀態（產生推進力）
-                if (forwardComponent < -pullThreshold)
-                {
-                    state = HandState.Pulling;
-
-                    // 推進力 = 拉的速度大小 × 倍率，方向 = 相機前方
-                    Vector3 push = camForward * Mathf.Abs(forwardComponent) * speedMultiplier;
-                    currentVelocity += push;
-                    Debug.Log($"{handName} 往後拉（推進！）力道:{Mathf.Abs(forwardComponent):F2}");
-                }
-                break;
-
-            case HandState.Pulling:
-                // 手速度接近0 → 回到 Idle，準備下一次爬行
-                if (handVel.magnitude < 0.1f)
-                {
-                    state = HandState.Idle;
-                }
-                break;
+            if (surface.CompareTag(ClimbableTag))
+                touchingClimbable = true;
+            else
+                touchingGround = true;
         }
     }
 
-    private void KeyboardTest()
+    private Vector3 CalculateBodyMove(Hand hand, float deltaTime)
     {
-        // 鍵盤測試：按一下W產生一次推進力（模擬一次爬行）
-        var keyboard = UnityEngine.InputSystem.Keyboard.current;
-        if (keyboard == null) return;
+        // 用 TrackingSpace 的本地座標，身體移動才不會被算成手的移動
+        Vector3 localPosition = trackingSpace.InverseTransformPoint(hand.anchor.position);
+        Vector3 localDelta = localPosition - hand.previousLocalPosition;
+        bool hadPreviousPosition = hand.hasPreviousPosition;
 
-        Vector3 camForward = Vector3.ProjectOnPlane(cameraTransform.forward, Vector3.up).normalized;
-        Vector3 camRight   = Vector3.ProjectOnPlane(cameraTransform.right,   Vector3.up).normalized;
+        hand.previousLocalPosition = localPosition;
+        hand.hasPreviousPosition = true;
 
-        if (keyboard.wKey.wasPressedThisFrame)
-            currentVelocity += camForward * speedMultiplier;
-        if (keyboard.sKey.wasPressedThisFrame)
-            currentVelocity -= camForward * speedMultiplier;
-        if (keyboard.aKey.wasPressedThisFrame)
-            currentVelocity -= camRight * speedMultiplier;
-        if (keyboard.dKey.wasPressedThisFrame)
-            currentVelocity += camRight * speedMultiplier;
+        if (!hadPreviousPosition || !hand.isGrabbing) return Vector3.zero;
 
-        // 衰減
-        currentVelocity *= momentum;
+        Vector3 handDelta = trackingSpace.TransformVector(localDelta);
+        if (handDelta.magnitude / deltaTime > maxHandSpeed) return Vector3.zero;
 
-        Vector3 finalMove = currentVelocity + Vector3.up * verticalVelocity;
-        characterController.Move(finalMove * Time.deltaTime);
+        Vector3 move = -handDelta * pullGain;
+        if (hand.onClimbable) return move;
+
+        move.y = 0f;
+        if (!allowBackwardOnGround)
+        {
+            Vector3 forward = Vector3.ProjectOnPlane(cameraTransform.forward, Vector3.up).normalized;
+            float forwardAmount = Vector3.Dot(move, forward);
+            if (forwardAmount < 0f)
+                move -= forward * forwardAmount;
+        }
+
+        return move;
+    }
+
+    private void ResetHand(Hand hand)
+    {
+        if (hand == null) return;
+
+        hand.hasPreviousPosition = false;
+        hand.isGrabbing = false;
+        hand.onClimbable = false;
     }
 }
