@@ -4819,9 +4819,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::BlowoutDepthProbe
   head: {fileID: 1891108736}
   raycastManager: {fileID: 628822101}
-  grid: 7
+  columns: 7
+  rows: 10
   halfYawDeg: 25
-  maxPitchDeg: 50
+  minPitchDeg: 0
+  maxPitchDeg: 70
   everyNFrames: 2
   minDist: 0.15
   maxDist: 0.3
@@ -4832,10 +4834,13 @@ MonoBehaviour:
   maxLineCells: 12
   maxRowWidth: 3
   topmostRow: 0
-  rootFromRow: 4
-  rootFromColumn: 3
+  rootFromRow: 5
+  rootMaxColumnOffset: 3
   rootMaxDist: 0.225
   lineHoldTime: 0.4
+  retractSpeed: 0.5
+  ignoreNearHands: 1
+  handIgnoreRadius: 0.22
   retracted: 0.2
   extended: 0.3
 --- !u!114 &628822100
@@ -10525,6 +10530,8 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1430971869}
+  - component: {fileID: 1430971870}
+  - component: {fileID: 1430971871}
   m_Layer: 0
   m_Name: HeronRoot
   m_TagString: Untagged
@@ -10548,6 +10555,147 @@ Transform:
   - {fileID: 404022169}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1430971870
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1430971868}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 96bed4a01e605d34386d031223aa583a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::HeronThreat
+  player: {fileID: 1891108736}
+  expansion: {fileID: 1086801374}
+  modelYawOffsetDeg: -90
+  heronEnabled: 0
+  hideWhenIdle: 0
+  useTimer: 1
+  hiddenSeconds: {x: 8, y: 15}
+  walkSpeed: 1.2
+  turnSpeedDeg: 360
+  attackDistance: 0.9
+  expandThreshold: 0.6
+  rearmBelow: 0.3
+  biteGraceSeconds: 0.15
+  firstBiteDelay: 1
+  windupSeconds: 0.6
+  windupBackDistance: 0.25
+  windupTiltDeg: 25
+  lungeDistance: 0.3
+  caughtLungeSeconds: 0.12
+  lungeMinHeadDistance: 0.5
+  staggerSeconds: 0.4
+  biteInterval: 1.5
+  bitesToGiveUp: 3
+  hapticOnBlocked: 1
+  hapticAmplitude: 0.7
+  hapticSeconds: 0.2
+  windupClip: {fileID: 0}
+  blockedClip: {fileID: 0}
+  audioSource: {fileID: 1430971871}
+  showDebugLabel: 1
+  labelHeight: 0.8
+  labelFontSize: 1
+--- !u!82 &1430971871
+AudioSource:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1430971868}
+  m_Enabled: 1
+  serializedVersion: 4
+  OutputAudioMixerGroup: {fileID: 0}
+  m_audioClip: {fileID: 0}
+  m_Resource: {fileID: 0}
+  m_PlayOnAwake: 0
+  m_Volume: 1
+  m_Pitch: 1
+  Loop: 0
+  Mute: 0
+  Spatialize: 0
+  SpatializePostEffects: 0
+  Priority: 128
+  DopplerLevel: 1
+  MinDistance: 1
+  MaxDistance: 500
+  Pan2D: 0
+  rolloffMode: 0
+  BypassEffects: 0
+  BypassListenerEffects: 0
+  BypassReverbZones: 0
+  rolloffCustomCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 1
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    - serializedVersion: 3
+      time: 1
+      value: 0
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  panLevelCustomCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 1
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  spreadCustomCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 0
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  reverbZoneMixCustomCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 1
+      inSlope: 0
+      outSlope: 0
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
 --- !u!1 &1440999559
 GameObject:
   m_ObjectHideFlags: 0
@@ -13772,6 +13920,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::IntegrationCheck
   tongue: {fileID: 319230467}
   probe: {fileID: 628822099}
+  heron: {fileID: 1430971870}
   interval: 1
 --- !u!114 &1908201689
 MonoBehaviour:
@@ -13798,7 +13947,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1908201686}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: a494149b1185bc3489293d4edd91b079, type: 3}
   m_Name: 

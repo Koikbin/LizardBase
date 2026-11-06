@@ -8,6 +8,7 @@ public class IntegrationCheck : MonoBehaviour
 {
     public TongueTrigger tongue;
     public BlowoutDepthProbe probe;
+    public HeronThreat heron;
     public float interval = 1f;
 
     float next;
@@ -28,7 +29,8 @@ public class IntegrationCheck : MonoBehaviour
         if (probe != null)
             sb.Append(" | depth: tip=").Append(probe.TipDistance.ToString("F2"))
               .Append(" hits=").Append(probe.NearHitCount)
-              .Append(" L01=").Append(probe.Length01.ToString("F2"));
+              .Append(" L01=").Append(probe.Length01.ToString("F2"))
+              .Append(" why=").Append(probe.DescribeResult());
         else sb.Append(" | probe=NULL");
 
         if (tongue != null)
@@ -40,6 +42,15 @@ public class IntegrationCheck : MonoBehaviour
 
         sb.Append(" | ants=").Append(AntWander.All.Count)
           .Append(" eaten=").Append(AntWander.EatenCount);
+
+        if (heron != null)
+            sb.Append(" | heron: ").Append(heron.heronEnabled ? heron.CurrentState.ToString() : "off")
+              .Append(heron.CurrentState == HeronThreat.State.Attack ? "/" + heron.CurrentBitePhase : "")
+              .Append(" blocked=").Append(heron.BlockedCount).Append("/").Append(heron.bitesToGiveUp)
+              .Append(" def=").Append(heron.DefenseProgress01.ToString("F2"))
+              .Append(" caught=").Append(HeronThreat.CaughtCount)
+              .Append(" gaveUp=").Append(HeronThreat.GaveUpCount);
+        else sb.Append(" | heron=NULL");
 
         Debug.Log(sb.ToString());
     }
