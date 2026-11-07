@@ -13,7 +13,14 @@ public class ElbowTracker : MonoBehaviour
     [Range(0f, 1f)]
     public float minConfidence = 0.5f;   // 信心值低於這個就算無效
 
+    // 身體追蹤和「同時手勢+手把」不能並存（OVRBody 看到 OVRManager 開著就會關掉自己）。
+    // 勾選：啟動時把同時模式關掉，手肘才能動；但 BlowoutDepthProbe 拿著手把時的手部骨架排除可能失效。
+    // 取消勾選：不碰同時模式，維持原狀，手肘追蹤不會啟動（顯示 simul ON）。
+    public bool disableSimultaneousHands = true;
+
     // ---- 給其他腳本讀的結果 ----
+    public bool simultaneousOn;          // OVRManager 的同時手勢+手把目前是否開著
+    public bool simultaneousSwitchOk;    // 執行時關閉同時模式的呼叫是否回報成功（沒呼叫就是 false）
     public bool permissionGranted;
     public bool started;                 // OVRBody 有在跑（沒被自己關掉）
     public bool hasData;                 // 這一幀有拿到 BodyState
@@ -38,9 +45,17 @@ public class ElbowTracker : MonoBehaviour
     bool requested;
     int retries;
     float nextRetry;
+    OVRManager manager;
 
     void Start()
     {
+        manager = FindAnyObjectByType<OVRManager>();
+        if (disableSimultaneousHands && manager != null && manager.SimultaneousHandsAndControllersEnabled)
+        {
+            simultaneousSwitchOk = OVRInput.DisableSimultaneousHandsAndControllers();
+            manager.SimultaneousHandsAndControllersEnabled = false;
+        }
+
         if (body == null)
         {
             // 先建在關閉的物件上，避免 OVRBody 在沒權限時就 OnEnable 然後把自己關掉
@@ -54,7 +69,8 @@ public class ElbowTracker : MonoBehaviour
 
     void Update()
     {
-        permissionGranted = OVRPermissionsRequester.IsPermissionGranted(OVRPermissionsRequester.Permission.BodyTracking);
+        simultaneousOn = manager != null && manager.SimultaneousHandsAndControllersEnabled;
+        permissionGranted =OVRPermissionsRequester.IsPermissionGranted(OVRPermissionsRequester.Permission.BodyTracking);
 
         if (!permissionGranted)
         {

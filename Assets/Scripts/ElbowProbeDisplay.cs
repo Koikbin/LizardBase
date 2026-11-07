@@ -117,7 +117,10 @@ public class ElbowProbeDisplay : MonoBehaviour
         {
             sb.Append("BODY perm ").Append(YN(elbow.permissionGranted))
               .Append("  run ").Append(YN(elbow.started))
-              .Append("  data ").Append(YN(elbow.hasData)).Append('\n');
+              .Append("  data ").Append(YN(elbow.hasData))
+              .Append("  simul ").Append(elbow.simultaneousOn ? "ON" : "off")
+              .Append(elbow.disableSimultaneousHands ? (elbow.simultaneousSwitchOk ? " (sw ok)" : " (sw ?)") : "")
+              .Append('\n');
             sb.Append("calib ").Append(elbow.calibration)
               .Append("  conf ").Append(elbow.confidence.ToString("F2"))
               .Append("  joints ").Append(YN(elbow.jointsValid)).Append('\n');
