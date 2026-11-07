@@ -19,10 +19,25 @@ public class ExpansionInput : MonoBehaviour
     public float distance;
     public float scale = 1f;
 
+    // ---- 手肘外展（取消勾選 useElbow 就完全等於原本只用手把距離）----
+    public bool useElbow = true;
+    public ElbowTracker elbow;        // 留空會自動找場景裡的 ElbowTracker
+    public float blendTime = 0.25f;   // 手肘有效/無效切換的淡入淡出時間
+    public float minElbowRange = 20f; // 校準時併攏和張開的角度差至少要這麼多度，否則不存手肘校準
+
+    // 量測用，給顯示腳本讀
+    public float distanceT;           // 手把距離換算的 0~1
+    public float elbowT;              // 手肘角換算的 0~1（最後一次有效值）
+    public float elbowWeight;         // 0 = 只用手把，1 = 取兩者較小值
+    public bool elbowCalibrated;
+    public float minA, maxA;          // 手肘校準角度（度）
+
     float minD, maxD;
     float velocity;
     int state;                        // 0 = 等待併攏, 1 = 等待外展, 2 = 運作中
     bool placed;
+    float pendingMinA;
+    bool pendingMinAValid;
 
     void Start()
     {
@@ -32,6 +47,37 @@ public class ExpansionInput : MonoBehaviour
             maxD = PlayerPrefs.GetFloat("maxD");
             state = 2;
         }
+
+        // 手肘校準用另外的鍵，不動原本的 minD / maxD
+        if (PlayerPrefs.HasKey("elbowMinA") && PlayerPrefs.HasKey("elbowMaxA"))
+        {
+            minA = PlayerPrefs.GetFloat("elbowMinA");
+            maxA = PlayerPrefs.GetFloat("elbowMaxA");
+            elbowCalibrated = true;
+        }
+
+        if (useElbow && elbow == null) elbow = FindAnyObjectByType<ElbowTracker>();
+    }
+
+    bool ElbowReady => useElbow && elbow != null && elbow.isValid;
+
+    // 手把 0~1 和手肘 0~1 取較小值；手肘無效時在 blendTime 內淡回只用手把
+    float Combine(float tCtrl)
+    {
+        if (!useElbow)
+        {
+            elbowWeight = 0f;
+            return tCtrl;
+        }
+
+        bool ok = ElbowReady && elbowCalibrated;
+        if (ok) elbowT = Mathf.Clamp01(Mathf.InverseLerp(minA, maxA, elbow.Angle));
+
+        float step = blendTime > 0f ? Time.deltaTime / blendTime : 1f;
+        elbowWeight = Mathf.MoveTowards(elbowWeight, ok ? 1f : 0f, step);
+
+        // 淡出期間用最後一次有效的 elbowT，不讀無效的角度
+        return Mathf.Lerp(tCtrl, Mathf.Min(tCtrl, elbowT), elbowWeight);
     }
 
     void Update()
@@ -64,7 +110,13 @@ public class ExpansionInput : MonoBehaviour
         if (state == 0)
         {
             Show("Hands together\nright trigger\nd " + distance.ToString("F2"));
-            if (trigger) { minD = distance; state = 1; }
+            if (trigger)
+            {
+                minD = distance;
+                pendingMinAValid = ElbowReady;
+                if (pendingMinAValid) pendingMinA = elbow.Angle;
+                state = 1;
+            }
         }
         else if (state == 1)
         {
@@ -77,13 +129,24 @@ public class ExpansionInput : MonoBehaviour
                 {
                     PlayerPrefs.SetFloat("minD", minD);
                     PlayerPrefs.SetFloat("maxD", maxD);
+
+                    // 同時記下手肘角。兩次都有效且差距夠大才存，否則沿用舊的手肘校準
+                    if (pendingMinAValid && ElbowReady && elbow.Angle - pendingMinA >= minElbowRange)
+                    {
+                        minA = pendingMinA;
+                        maxA = elbow.Angle;
+                        PlayerPrefs.SetFloat("elbowMinA", minA);
+                        PlayerPrefs.SetFloat("elbowMaxA", maxA);
+                        elbowCalibrated = true;
+                    }
                     state = 2;
                 }
             }
         }
         else
         {
-            float t = Mathf.Clamp01(Mathf.InverseLerp(minD, maxD, distance));
+            distanceT = Mathf.Clamp01(Mathf.InverseLerp(minD, maxD, distance));
+            float t = Combine(distanceT);
             if (t < deadZone) t = 0f;
             float targetScale = Mathf.Lerp(1f, maxScale, t);
             scale = Mathf.SmoothDamp(scale, targetScale, ref velocity, smoothTime);
