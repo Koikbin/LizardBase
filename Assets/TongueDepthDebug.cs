@@ -101,7 +101,7 @@ public class TongueDepthDebug : MonoBehaviour
     // 圖下面列出每一塊有沒有通過細線判定,沒過的話是哪一條規則、數字多少。
     // 測試標記:按住哪個鍵,就代表現在在測哪一種情況。沒按 = null。
     // B = 吹龍;A = 翹起吹龍但沒吹;X = 拿手把在臉前比;Y = 手指(沒拿手把)在臉前比
-    private static string CurrentMark()
+    public static string CurrentMark()
     {
         if (OVRInput.Get(OVRInput.Button.Two, OVRInput.Controller.RTouch)) return "BLOW";
         if (OVRInput.Get(OVRInput.Button.One, OVRInput.Controller.RTouch)) return "TILT";
@@ -114,6 +114,13 @@ public class TongueDepthDebug : MonoBehaviour
     {
         if (Time.unscaledTime < nextGridLogTime || probe.CellDistances.Length == 0) return;
         nextGridLogTime = Time.unscaledTime + gridLogInterval;
+        Debug.Log(GridReport(mark));
+    }
+
+    // 目前這一輪的格子圖文字(和 Console 的 [DepthGrid] 同一個格式)
+    public string GridReport(string mark)
+    {
+        if (probe.CellDistances.Length == 0) return "";
 
         int columns = probe.columns;
         int rows = probe.rows;
@@ -152,7 +159,7 @@ public class TongueDepthDebug : MonoBehaviour
         for (int i = 0; i < probe.ClusterCount; i++)
             gridText.Append("  ").Append(probe.DescribeCluster(i)).Append('\n');
 
-        Debug.Log(gridText.ToString());
+        return gridText.ToString();
     }
 
     private void Pad(string text, int width)

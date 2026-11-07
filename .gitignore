@@ -17,3 +17,6 @@ Recordings/
 # 超過 GitHub 100MB 上限
 /Assets/Models/2地形2.obj
 /Assets/Models/2地形2.obj.meta
+
+# 吹龍偵錯照片(DepthSnapshot)
+/DepthShots/
