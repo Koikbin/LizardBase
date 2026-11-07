@@ -26,11 +26,23 @@ public class ElbowProbeDisplay : MonoBehaviour
     TextMeshPro text;
     bool placed;
 
-    void Start()
+    float nextResolve;
+
+    // 找不到的參考每秒再找一次。ExpansionInput 所在物件被關掉時找不到，
+    // 頭就退回用主攝影機，至少身體追蹤的數值還會顯示。
+    void Resolve()
     {
+        if (Time.unscaledTime < nextResolve) return;
+        nextResolve = Time.unscaledTime + 1f;
         if (expansion == null) expansion = FindAnyObjectByType<ExpansionInput>();
         if (elbow == null) elbow = FindAnyObjectByType<ElbowTracker>();
         if (head == null && expansion != null) head = expansion.head;
+        if (head == null && Camera.main != null) head = Camera.main.transform;
+    }
+
+    void Start()
+    {
+        Resolve();
 
         var go = new GameObject("ElbowProbeText");
         text = go.AddComponent<TextMeshPro>();
@@ -49,6 +61,7 @@ public class ElbowProbeDisplay : MonoBehaviour
     void LateUpdate()
     {
         if (text == null) return;
+        if (head == null || expansion == null || elbow == null) Resolve();
         text.gameObject.SetActive(show);
         if (!show || head == null) return;
 
@@ -127,6 +140,14 @@ public class ElbowProbeDisplay : MonoBehaviour
             sb.Append("elbow L ").Append(elbow.leftAngle.ToString("F0"))
               .Append("  R ").Append(elbow.rightAngle.ToString("F0"))
               .Append("  min ").Append(elbow.Angle.ToString("F0")).Append('\n');
+        }
+        if (expansion == null)
+        {
+            sb.Append("EXPANSION: not found (object off?)\n");
+        }
+        else if (!expansion.isActiveAndEnabled)
+        {
+            sb.Append("EXPANSION: object/script is OFF\n");
         }
         if (expansion != null)
         {

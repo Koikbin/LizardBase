@@ -70,7 +70,7 @@ public class ElbowTracker : MonoBehaviour
     void Update()
     {
         simultaneousOn = manager != null && manager.SimultaneousHandsAndControllersEnabled;
-        permissionGranted =OVRPermissionsRequester.IsPermissionGranted(OVRPermissionsRequester.Permission.BodyTracking);
+        permissionGranted = OVRPermissionsRequester.IsPermissionGranted(OVRPermissionsRequester.Permission.BodyTracking);
 
         if (!permissionGranted)
         {
