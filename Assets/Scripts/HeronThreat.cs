@@ -76,6 +76,10 @@ public class HeronThreat : MonoBehaviour
     public float windupTiltDeg = 25f;
     [Tooltip("往前撲幾公尺。擋下時撲出去會被彈回原位;被抓時撲出去就停在那裡。")]
     public float lungeDistance = 0.3f;
+    [Tooltip("咬下去時身體依玩家頭的高度自動往前傾,讓嘴碰得到。關掉 = 固定前傾 windupTiltDeg 的一半。")]
+    public bool autoBiteLean = true;
+    [Tooltip("自動前傾的上限(度),可以超過 90,身體會繞髖部往下彎。")]
+    public float maxBiteLeanDeg = 140f;
     [Tooltip("被抓時往前撲出去要花幾秒。")]
     public float caughtLungeSeconds = 0.12f;
     [Tooltip("往前撲時,和玩家頭部的水平距離至少要留幾公尺,不會撲到臉上。")]
@@ -115,6 +119,29 @@ public class HeronThreat : MonoBehaviour
     public int BlockedCount => blockedCount;
     public float DefenseProgress01 => bitesToGiveUp > 0 ? Mathf.Clamp01(blockedCount / (float)bitesToGiveUp) : 0f;
 
+    // ---- 給 HeronNeckAim 看(唯讀,不影響原本行為) ----
+    // 撞開(Stagger)時間裡,前面這一段比例是往前撲,後面是被彈回
+    public const float StaggerLungePart = 0.3f;
+    // 被抓後原地咬住待命中(直到 ResetRound / BeginApproach)
+    public bool IsCaught => waitingAfterCatch;
+    // 這一口撲到底時身體往前傾的角度(度)
+    public float BiteLeanDeg => biteLeanDeg;
+    // 沒有傾斜時的旋轉 = 面向 × 模型修正(給 HeronHipLean 用)
+    public Quaternion UprightRotation => Quaternion.Euler(0f, yaw, 0f) * Quaternion.Euler(0f, modelYawOffsetDeg, 0f);
+    // 預告進度 0~1(不在預告時是 0)
+    public float WindupProgress01 => (CurrentState == State.Attack && CurrentBitePhase == BitePhase.Windup)
+        ? (windupSeconds > 0f ? Mathf.Clamp01((Time.time - windupStart) / windupSeconds) : 1f) : 0f;
+    // 撞開進度 0~1(不在撞開時是 0)
+    public float StaggerProgress01 => (CurrentState == State.Attack && CurrentBitePhase == BitePhase.Stagger)
+        ? (staggerSeconds > 0f ? Mathf.Clamp01((Time.time - staggerStart) / staggerSeconds) : 1f) : 0f;
+    // 停下來咬的位置
+    public Vector3 AttackPosition => attackPos;
+    // 給定「停下位置到玩家頭的水平距離」,這一口會往前撲幾公尺(ResolveBite 用同一個公式)
+    public float PredictLunge(float flatDistToHead)
+    {
+        return Mathf.Clamp(Mathf.Min(lungeDistance, flatDistToHead - lungeMinHeadDistance), 0f, lungeDistance);
+    }
+
     Vector3 home;
     Quaternion homeRotation;
     float yaw;                  // 天敵面向(不含模型修正與後仰)
@@ -124,6 +151,8 @@ public class HeronThreat : MonoBehaviour
     int blockedCount;
     float judgeMax;             // 預告最後一小段時間內的膨脹最大值
     float lungeActual;          // 這一口實際往前撲的距離
+    float biteLeanDeg;          // 這一口撲到底時身體往前傾的角度
+    HeronNeckAim neckAim;       // 用來算嘴要碰到頭需要多少前傾(可以沒有)
     float windupStart;
     float staggerStart;
     bool expandLocked;          // 擋下後,等玩家先收手才恢復讀膨脹
@@ -141,6 +170,7 @@ public class HeronThreat : MonoBehaviour
     {
         home = transform.position;
         homeRotation = transform.rotation;
+        neckAim = GetComponent<HeronNeckAim>();
         yaw = transform.eulerAngles.y - modelYawOffsetDeg;
 
         renderers = GetComponentsInChildren<Renderer>(true);
@@ -258,7 +288,7 @@ public class HeronThreat : MonoBehaviour
         {
             float t = caughtLungeSeconds > 0f ? Mathf.Clamp01((Time.time - caughtStart) / caughtLungeSeconds) : 1f;
             float offset = Mathf.Lerp(-windupBackDistance, lungeActual, t * t);
-            float tilt = Mathf.Lerp(windupTiltDeg, -windupTiltDeg * 0.5f, t);   // 撲到底時往前傾
+            float tilt = Mathf.Lerp(windupTiltDeg, -biteLeanDeg, t);   // 撲到底時往前傾
             transform.position = attackPos + Forward() * offset;
             ApplyRotation(tilt);
             return;
@@ -340,18 +370,18 @@ public class HeronThreat : MonoBehaviour
             {
                 float t = staggerSeconds > 0f ? Mathf.Clamp01((Time.time - staggerStart) / staggerSeconds) : 1f;
                 // 前 30%:從後退的位置撲到最前面;後 70%:被彈回原位
-                const float LungePart = 0.3f;
+                const float LungePart = StaggerLungePart;
                 if (t < LungePart)
                 {
                     float u = t / LungePart;
                     offset = Mathf.Lerp(-windupBackDistance, lungeActual, u * u);
-                    tilt = Mathf.Lerp(windupTiltDeg, -windupTiltDeg * 0.5f, u);   // 從後仰撲到前傾
+                    tilt = Mathf.Lerp(windupTiltDeg, -biteLeanDeg, u);   // 從後仰撲到前傾
                 }
                 else
                 {
                     float u = Mathf.SmoothStep(0f, 1f, (t - LungePart) / (1f - LungePart));
                     offset = Mathf.Lerp(lungeActual, 0f, u);
-                    tilt = Mathf.Lerp(-windupTiltDeg * 0.5f, 0f, u);              // 被彈回時慢慢站直
+                    tilt = Mathf.Lerp(-biteLeanDeg, 0f, u);              // 被彈回時慢慢站直
                 }
 
                 if (Time.time >= phaseEnd)
@@ -373,6 +403,14 @@ public class HeronThreat : MonoBehaviour
         ApplyRotation(tilt);
     }
 
+    void UpdateBiteLean()
+    {
+        float fixedLean = windupTiltDeg * 0.5f;
+        biteLeanDeg = autoBiteLean && neckAim != null && neckAim.isActiveAndEnabled
+            ? neckAim.RequiredBiteLean(maxBiteLeanDeg, fixedLean)
+            : fixedLean;
+    }
+
     void StartWindup()
     {
         CurrentBitePhase = BitePhase.Windup;
@@ -381,13 +419,15 @@ public class HeronThreat : MonoBehaviour
         judgeMax = 0f;
         PlayClip(windupClip);
         LogPhase($"第 {blockedCount + 1} 口 預告開始");
+        UpdateBiteLean();
         OnBiteWindup?.Invoke();
     }
 
     void ResolveBite(float distToHead)
     {
         // 擋下或被抓都會往前撲,但不得撲進玩家頭部 lungeMinHeadDistance 以內
-        lungeActual = Mathf.Clamp(Mathf.Min(lungeDistance, distToHead - lungeMinHeadDistance), 0f, lungeDistance);
+        lungeActual = PredictLunge(distToHead);
+        UpdateBiteLean();   // 玩家可能在預告時移動,用最新的頭位置再算一次
         bool blocked = judgeMax >= expandThreshold;
         Debug.Log($"[Heron] t={Time.time:F1}s 第 {blockedCount + 1} 口判定:膨脹最大={judgeMax:F2} 需要={expandThreshold:F2}"
                 + $"(現在實際={RawExpand():F2}{(expandLocked ? ",尚未收手所以不算" : "")}) → {(blocked ? "擋下" : "被抓")}", this);
