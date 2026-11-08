@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "com.coplaydev.unity-mcp": "https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main",
+    "com.coplaydev.unity-mcp": "https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity",
     "com.meta.xr.mrutilitykit": "207.0.1",
     "com.meta.xr.sdk.all": "207.0.0",
     "com.unity.ai.navigation": "2.0.14",

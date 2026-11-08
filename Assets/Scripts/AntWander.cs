@@ -4,11 +4,14 @@ using UnityEngine;
 // 螞蟻:有 Path 就沿路線走,沒有就隨機遊走;舌尖靠近會逃,附近的螞蟻也跟著逃;逃完走回最近的路徑點;
 // 被抓住的那隻不動;被吃掉後過幾秒重生。
 // 掛在每個 AntRoot 上。不需要手動把螞蟻拖進 TongueTrigger,會自動登記。
-public class AntWander : MonoBehaviour
+public class AntWander : MonoBehaviour, ITongueEdible
 {
     public static readonly List<AntWander> All = new List<AntWander>();
     public static Transform Threat;          // 舌尖(由 TongueTrigger 在伸出時設定,縮回時設 null)
     public static int EatenCount;
+
+    [Header("吃掉獲得")]
+    public float toxinAmount = 1f;           // 吃一隻螞蟻得到多少毒素
 
     [Header("遊走")]
     public float wanderRadius = 1.0f;
@@ -44,6 +47,8 @@ public class AntWander : MonoBehaviour
     [Header("貼地")]
     public LayerMask groundMask;             // 哪些 Layer 算地面;Nothing = 不貼地
     public float groundOffset = 0f;          // 模型陷進地面時調高
+    [Tooltip("一步能上下的高度(公尺)。前方地面高低差超過這個值就當作峭壁邊緣,不走過去。0 = 不限制")]
+    public float maxStepHeight = 0f;
 
     [Header("模型方向")]
     public float yawOffsetDeg;               // 模型前方不是 +Z 時用來修正
@@ -92,6 +97,7 @@ public class AntWander : MonoBehaviour
     bool returning;
     Vector3 caughtAt;
     float laneTarget;        // 帶狀通道裡目前想走的左右位置
+    float blockedTime;       // 被峭壁邊緣擋住多久了
 
     bool HasPath => path != null && path.Points.Length > 0;
 
@@ -194,7 +200,29 @@ public class AntWander : MonoBehaviour
             if (onPath && hadGround && !TryGetGroundY(next, out _)) next = pos;
         }
 
+        bool wasGrounded = hadGround;
         hadGround = TryGetGroundY(next, out float groundY);
+
+        // 高低差太大 = 峭壁邊緣:停在原地換方向;沿路線走卻卡住太久就從起點重來
+        if (wasGrounded && hadGround && maxStepHeight > 0f && Mathf.Abs(groundY - pos.y) > maxStepHeight)
+        {
+            next = pos;
+            groundY = pos.y;
+            if (!onPath) PickTarget();
+            lastFleeDir = -lastFleeDir;
+            panicDir = -panicDir;
+            blockedTime += Time.deltaTime;
+            if (onPath && !fleeing && blockedTime > 2f)
+            {
+                if (path.IsStrip) PlaceInStrip(0f); else MoveToStartPoint();
+                returning = false;
+                blockedTime = 0f;
+                SnapNow();
+                return;
+            }
+        }
+        else blockedTime = 0f;
+
         transform.position = new Vector3(next.x, hadGround ? groundY : pos.y, next.z);
         if (move.sqrMagnitude > 0.0001f)
         {
@@ -435,6 +463,18 @@ public class AntWander : MonoBehaviour
             other.lastFleeDir = away.sqrMagnitude < 0.0001f ? RandomFlatDir() : Quaternion.Euler(0, other.burstAngle, 0) * away.normalized;
         }
     }
+
+    // ---- ITongueEdible:讓 TongueTrigger 用同一套流程處理螞蟻、水珠、礦石 ----
+    public bool CanBeCaught => isActiveAndEnabled && !IsCaught && !eaten;
+    public float CatchValue(TongueTrigger tongue, Vector3 tipPosition) => tongue.CatchValue(this, tipPosition);
+    public void OnCaught(Transform tip) => SetCaught(tip);
+    public void OnEaten()
+    {
+        Vector3 where = transform.position;
+        Eat();
+        LizardResources.Add(ResourceKind.Toxin, toxinAmount, where);
+    }
+    public string DisplayName => name;
 
     public void SetCaught(Transform by) { IsCaught = true; holder = by; caughtAt = transform.position; }
 

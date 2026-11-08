@@ -12,7 +12,7 @@ public class SnapToGround : MonoBehaviour
         Vector3 origin = transform.position + Vector3.up * castHeight;
         if (Physics.Raycast(origin, Vector3.down, out RaycastHit hit, maxDistance, groundMask, QueryTriggerInteraction.Ignore))
         {
-            // 只往上修正，不往下推，避免一路累積下沉
+            // 直接貼到射線打到的地面高度(上下都會修正);射線起點在物件上方 castHeight,所以陷進地面也找得回來
             float targetY = hit.point.y + offset;
             Vector3 p = transform.position;
             p.y = targetY;

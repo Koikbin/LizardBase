@@ -17,3 +17,18 @@ Recordings/
 # 超過 GitHub 100MB 上限
 /Assets/Models/2地形2.obj
 /Assets/Models/2地形2.obj.meta
+
+# 隊友給的原始資料夾(已整理到 Assets/ColoredTerrain)
+/_teammate_leftovers/
+
+# 吹龍偵錯照片(DepthSnapshot)
+/DepthShots/
+
+# 建置 / 打包產生的暫存
+/.utmp/
+/*_BackUpThisFolder_ButDontShipItWithYourGame/
+/*_BurstDebugInformation_DoNotShip/
+
+# 編輯器截圖
+/Assets/Screenshots/
+/Assets/Screenshots.meta
