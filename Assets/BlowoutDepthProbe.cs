@@ -57,8 +57,40 @@ public class BlowoutDepthProbe : MonoBehaviour
     [Header("排除手把")]
     [Tooltip("打到的點離左右手把(或手)太近就不算,用來擋掉手把伸到臉前造成的誤判")]
     public bool ignoreNearHands = true;
-    [Tooltip("離手把多近(公尺)內的命中不算。手把本體加上握著它的手,15 公分會漏出邊緣,所以用 22 公分")]
+    [Tooltip("只有手把、沒有手部骨架時,離手把多近(公尺)內的命中不算。手把本體加上握著它的手,15 公分會漏出邊緣,所以用 22 公分")]
     public float handIgnoreRadius = 0.22f;
+    [Tooltip("同時用手部追蹤的骨架(每隻手 26 個關節)排除手指和手掌。需要 OVRManager 開啟「同時追蹤手和手把」")]
+    public bool useHandJoints = true;
+    [Tooltip("離任何一個手部關節多近(公尺)內的命中不算。手指本身約 1 公分粗,加上深度圖邊緣的雜訊")]
+    public float handJointRadius = 0.05f;
+    [Tooltip("有手部骨架時,手把本體只要擋這麼大(公尺)就好,握著它的手交給關節去擋")]
+    public float controllerRadiusWithHand = 0.12f;
+
+    [Header("嘴巴位置")]
+    [Tooltip("勾選 = 所有距離(有效距離、細線判定、龍尾、舌頭長度)改從嘴巴量,並改用下面「嘴巴模式門檻」那一組;"
+           + "不勾 = 照舊從兩眼中間量,用上面原本那一組。射線本身都是從兩眼中間射出")]
+    public bool measureFromMouth = true;
+    [Tooltip("嘴巴相對兩眼中間的位置(公尺,頭的座標):y 負 = 往下、z 正 = 往前。不論有沒有勾選,格子圖都會另外記一份從這裡量的距離")]
+    public Vector3 mouthOffset = new Vector3(0f, -0.09f, 0.05f);
+
+    [Header("嘴巴模式門檻(公尺,勾 Measure From Mouth 時才用)")]
+    [Tooltip("對應眼睛模式的 Min Dist。2026-11-07 測試:吹龍最靠近嘴巴的格子約 6~13 公分")]
+    public float mouthMinDist = 0.05f;
+    [Tooltip("對應眼睛模式的 Max Dist。測試時吹龍最遠的格子約 11~20 公分")]
+    public float mouthMaxDist = 0.22f;
+    [Tooltip("對應眼睛模式的 Root Max Dist:線最靠近嘴巴的一點不能比這個遠")]
+    public float mouthRootMaxDist = 0.13f;
+    [Tooltip("對應眼睛模式的 Retracted:龍尾離嘴巴這麼近時舌頭 = 0")]
+    public float mouthRetracted = 0.10f;
+    [Tooltip("對應眼睛模式的 Extended:龍尾離嘴巴這麼遠時舌頭 = 1。吹龍實際長約 13 公分")]
+    public float mouthExtended = 0.20f;
+
+    // 目前實際使用的門檻(依 measureFromMouth 選眼睛或嘴巴那一組)
+    public float MinDist => measureFromMouth ? mouthMinDist : minDist;
+    public float MaxDist => measureFromMouth ? mouthMaxDist : maxDist;
+    public float RootMaxDist => measureFromMouth ? mouthRootMaxDist : rootMaxDist;
+    public float Retracted => measureFromMouth ? mouthRetracted : retracted;
+    public float Extended => measureFromMouth ? mouthExtended : extended;
 
     [Header("對應成 0~1")]
     public float retracted = 0.20f;
@@ -77,6 +109,11 @@ public class BlowoutDepthProbe : MonoBehaviour
 
     // 偵錯用:每格射線的結果。索引 = 左右(0 = 最左) + 上下(0 = 最上) * columns
     public float[] CellDistances { get; private set; } = new float[0];
+    // 偵錯用:每格命中點到眼睛、到嘴巴的距離(沒打到 = 0)。CellDistances 等於其中一個,看 measureFromMouth
+    public float[] CellEyeDistances { get; private set; } = new float[0];
+    public float[] CellMouthDistances { get; private set; } = new float[0];
+    // 這一輪估計的嘴巴位置(世界座標)
+    public Vector3 MouthPoint { get; private set; }
     public EnvironmentRaycastHitStatus[] CellStatuses { get; private set; } = new EnvironmentRaycastHitStatus[0];
     // 這格的命中點離手把太近,被排除
     public bool[] CellNearHand { get; private set; } = new bool[0];
@@ -112,8 +149,12 @@ public class BlowoutDepthProbe : MonoBehaviour
     float lastLineTime = float.NegativeInfinity;
     float lastEvaluateTime = float.NegativeInfinity;
     OVRCameraRig rig;
-    readonly Vector3[] handPositions = new Vector3[2];
-    int handCount;
+    // 要排除的點(手把中心、手部關節)和各自的半徑平方
+    readonly System.Collections.Generic.List<Vector3> handPositions = new System.Collections.Generic.List<Vector3>(64);
+    readonly System.Collections.Generic.List<float> handRadiiSqr = new System.Collections.Generic.List<float>(64);
+    OVRPlugin.HandState handState = new OVRPlugin.HandState();
+    // 這一幀各手有沒有抓到骨架(偵錯用)
+    public int TrackedHandSkeletons { get; private set; }
 
     void Reset()
     {
@@ -128,6 +169,9 @@ public class BlowoutDepthProbe : MonoBehaviour
         EnsureBuffers();
 
         Vector3 origin = head.position;
+        // 用 TransformPoint,讓嘴巴偏移和命中點一樣跟著 rig 縮放
+        Vector3 mouth = head.TransformPoint(mouthOffset);
+        MouthPoint = mouth;
         UpdateHandPositions();
         int handIgnored = 0;
 
@@ -143,7 +187,9 @@ public class BlowoutDepthProbe : MonoBehaviour
                 bool didHit = raycastManager.Raycast(ray, out var hit, Mathf.Max(maxDist, measureDist));
                 int cell = i + j * columns;
                 CellStatuses[cell] = hit.status;
-                CellDistances[cell] = didHit ? Vector3.Distance(origin, hit.point) : 0f;
+                CellEyeDistances[cell] = didHit ? Vector3.Distance(origin, hit.point) : 0f;
+                CellMouthDistances[cell] = didHit ? Vector3.Distance(mouth, hit.point) : 0f;
+                CellDistances[cell] = measureFromMouth ? CellMouthDistances[cell] : CellEyeDistances[cell];
                 cellPoints[cell] = hit.point;
                 CellNearHand[cell] = didHit && IsNearHand(hit.point);
                 if (CellNearHand[cell]) handIgnored++;
@@ -166,32 +212,71 @@ public class BlowoutDepthProbe : MonoBehaviour
         return columns == 1 ? 0f : Mathf.Lerp(-halfYawDeg, halfYawDeg, column / (float)(columns - 1));
     }
 
-    // 找出這一幀有在追蹤的手把位置。手把放下、沒在追蹤時就不排除。
+    // 找出這一幀要排除的點:手把中心,加上手部追蹤骨架的每個關節。
+    // 手把放下、沒在追蹤時就不排除。
     void UpdateHandPositions()
     {
-        handCount = 0;
+        handPositions.Clear();
+        handRadiiSqr.Clear();
+        TrackedHandSkeletons = 0;
         if (!ignoreNearHands) return;
 
         if (rig == null) rig = FindFirstObjectByType<OVRCameraRig>();
-        if (rig == null) return;
+        if (rig == null || rig.trackingSpace == null) return;
 
-        if (rig.leftHandAnchor != null && IsTracked(OVRInput.Controller.LTouch, OVRInput.Controller.LHand))
-            handPositions[handCount++] = rig.leftHandAnchor.position;
-        if (rig.rightHandAnchor != null && IsTracked(OVRInput.Controller.RTouch, OVRInput.Controller.RHand))
-            handPositions[handCount++] = rig.rightHandAnchor.position;
+        AddHand(OVRPlugin.Hand.HandLeft, OVRInput.Controller.LTouch, OVRInput.Controller.LHand);
+        AddHand(OVRPlugin.Hand.HandRight, OVRInput.Controller.RTouch, OVRInput.Controller.RHand);
     }
 
-    static bool IsTracked(OVRInput.Controller controller, OVRInput.Controller hand)
+    void AddHand(OVRPlugin.Hand side, OVRInput.Controller touch, OVRInput.Controller hand)
     {
-        return OVRInput.GetControllerPositionTracked(controller) || OVRInput.GetControllerPositionTracked(hand);
+        Transform space = rig.trackingSpace;
+        bool gotSkeleton = useHandJoints && AddHandJoints(side, space);
+        if (gotSkeleton) TrackedHandSkeletons++;
+
+        if (OVRInput.GetControllerPositionTracked(touch))
+        {
+            // 有骨架時手交給關節擋,手把只擋本體;沒有骨架就照舊用大球把手和手把一起包住
+            float r = gotSkeleton ? controllerRadiusWithHand : handIgnoreRadius;
+            Add(space.TransformPoint(OVRInput.GetLocalControllerPosition(touch)), r);
+        }
+        else if (!gotSkeleton && OVRInput.GetControllerPositionTracked(hand))
+        {
+            // 純手部追蹤但拿不到關節(例如舊版骨架):退回手腕一點加大球
+            Add(space.TransformPoint(OVRInput.GetLocalControllerPosition(hand)), handIgnoreRadius);
+        }
+    }
+
+    bool AddHandJoints(OVRPlugin.Hand side, Transform space)
+    {
+        if (!OVRPlugin.GetHandState(OVRPlugin.Step.Render, side, ref handState)) return false;
+        if ((handState.Status & OVRPlugin.HandStatus.HandTracked) == 0) return false;
+
+        var bones = handState.BonePositions;
+        if (bones == null || bones.Length == 0)
+        {
+            // 拿不到各關節,只有手腕
+            Add(space.TransformPoint(handState.RootPose.Position.FromFlippedZVector3f()), handIgnoreRadius);
+            return true;
+        }
+
+        // OpenXR 骨架:關節位置和 RootPose 一樣在 tracking space
+        for (int i = 0; i < bones.Length; i++)
+            Add(space.TransformPoint(bones[i].FromFlippedZVector3f()), handJointRadius);
+        return true;
+    }
+
+    void Add(Vector3 point, float radius)
+    {
+        handPositions.Add(point);
+        handRadiiSqr.Add(radius * radius);
     }
 
     bool IsNearHand(Vector3 point)
     {
-        float radiusSqr = handIgnoreRadius * handIgnoreRadius;
-        for (int i = 0; i < handCount; i++)
+        for (int i = 0; i < handPositions.Count; i++)
         {
-            if ((point - handPositions[i]).sqrMagnitude <= radiusSqr) return true;
+            if ((point - handPositions[i]).sqrMagnitude <= handRadiiSqr[i]) return true;
         }
         return false;
     }
@@ -202,6 +287,8 @@ public class BlowoutDepthProbe : MonoBehaviour
 
         HitPoints = new Vector3[RayCount];
         CellDistances = new float[RayCount];
+        CellEyeDistances = new float[RayCount];
+        CellMouthDistances = new float[RayCount];
         CellStatuses = new EnvironmentRaycastHitStatus[RayCount];
         cellPoints = new Vector3[RayCount];
         visited = new bool[RayCount];
@@ -240,7 +327,7 @@ public class BlowoutDepthProbe : MonoBehaviour
             case Verdict.TooHigh: detail = $"碰到第{c.highestRow}排 < {topmostRow}"; break;
             case Verdict.NoRoot: detail = $"最低只到第{c.lowestRow}排,要到第{rootFromRow}排"; break;
             case Verdict.OffCenter: detail = $"嘴巴區偏{c.rootColumnOffset}欄 > {rootMaxColumnOffset}"; break;
-            case Verdict.RootTooFar: detail = $"最近{c.nearest * 100f:F0}cm > {rootMaxDist * 100f:F1}"; break;
+            case Verdict.RootTooFar: detail = $"最近{c.nearest * 100f:F0}cm > {RootMaxDist * 100f:F1}"; break;
             case Verdict.TooWide: detail = $"某排{c.widestRow}格 > {maxRowWidth}"; break;
             default: detail = $"{c.size}格 龍尾{c.far * 100f:F0}cm"; break;
         }
@@ -251,7 +338,7 @@ public class BlowoutDepthProbe : MonoBehaviour
     public string DescribeResult()
     {
         if (AcceptedCluster >= 0) return DescribeCluster(AcceptedCluster);
-        if (ClusterCount == 0) return "沒打到 15~" + (maxDist * 100f).ToString("F0") + "cm 內的東西";
+        if (ClusterCount == 0) return "沒打到 " + (MinDist * 100f).ToString("F0") + "~" + (MaxDist * 100f).ToString("F0") + "cm 內的東西";
 
         int biggest = 0;
         for (int i = 1; i < ClusterCount; i++)
@@ -263,8 +350,8 @@ public class BlowoutDepthProbe : MonoBehaviour
     {
         return CellStatuses[cell] == EnvironmentRaycastHitStatus.Hit
             && !CellNearHand[cell]
-            && CellDistances[cell] >= minDist
-            && CellDistances[cell] <= maxDist;
+            && CellDistances[cell] >= MinDist
+            && CellDistances[cell] <= MaxDist;
     }
 
     void EvaluateLine(float now)
@@ -323,7 +410,7 @@ public class BlowoutDepthProbe : MonoBehaviour
             else
                 TipDistance = Mathf.MoveTowards(TipDistance, bestDistance, retractSpeed * dt);
             TipPoint = cellPoints[bestCell];
-            Length01 = Mathf.InverseLerp(retracted, extended, TipDistance);
+            Length01 = Mathf.InverseLerp(Retracted, Extended, TipDistance);
         }
         else if (now - lastLineTime > lineHoldTime)
         {
@@ -404,7 +491,7 @@ public class BlowoutDepthProbe : MonoBehaviour
         else if (highestRow < topmostRow) cluster.verdict = Verdict.TooHigh;
         else if (lowestRow < rootFromRow) cluster.verdict = Verdict.NoRoot;
         else if (maxRootColumnOffset > rootMaxColumnOffset) cluster.verdict = Verdict.OffCenter;
-        else if (nearestDistance > rootMaxDist) cluster.verdict = Verdict.RootTooFar;
+        else if (nearestDistance > RootMaxDist) cluster.verdict = Verdict.RootTooFar;
         else if (widestRow > maxRowWidth) cluster.verdict = Verdict.TooWide;
         else cluster.verdict = Verdict.Pass;
 
