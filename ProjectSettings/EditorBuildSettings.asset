@@ -18,7 +18,7 @@ EditorBuildSettings:
     path: Assets/Scenes/DepthTest.unity
     guid: 47378a6c5fdeed64abebaa23c928cd66
   - enabled: 1
-    path: Assets/Scenes/main.unity
+    path: Assets/Scenes/MechanismTest.unity
     guid: 1eabc7dfc9f584d45b07d0ec52e968ac
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
