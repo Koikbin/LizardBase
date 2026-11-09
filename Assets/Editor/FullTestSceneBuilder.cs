@@ -6,7 +6,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
-// 選單 Lizard > Build FullTest Scene:從 main.unity 重新建立 FullTest.unity。
+// 選單 Lizard > Build FullTest Scene:從 MechanismTest.unity 重新建立 FullTest.unity。
 //   1. 移除舊環境(地形1、場景、水晶、蒼鷺、測試方塊)、噴血(SprayInput)、舊螞蟻
 //   2. 放入「場景3.fbx」當背景(放大 100 倍,擺放用使用者調好的位置/旋轉)
 //   3. 新增 Player(CharacterController + LizardLocomotion),把 OVRCameraRig 放到底下
@@ -17,7 +17,7 @@ using UnityEngine.SceneManagement;
 // 只想重新分析地形或重放螞蟻(不想重建整個場景),用 Lizard > Setup Terrain (Cliffs + Ants)。
 public static class FullTestSceneBuilder
 {
-    const string SourceScene = "Assets/Scenes/main.unity";
+    const string SourceScene = "Assets/Scenes/MechanismTest.unity";
     const string TargetScene = "Assets/Scenes/FullTest.unity";
     public const string BackgroundPath = "Assets/Models/場景3.fbx";
     const string ClimbableTag = "Climbable";
@@ -42,7 +42,7 @@ public static class FullTestSceneBuilder
 
         if (AssetDatabase.LoadAssetAtPath<SceneAsset>(TargetScene) != null &&
             !EditorUtility.DisplayDialog("Build FullTest Scene",
-                "FullTest.unity 已經存在。\n要從 main.unity 重新建立並覆蓋嗎?(你在 FullTest 裡手動做的修改會消失)", "覆蓋", "取消"))
+                "FullTest.unity 已經存在。\n要從 MechanismTest.unity 重新建立並覆蓋嗎?(你在 FullTest 裡手動做的修改會消失)", "覆蓋", "取消"))
             return;
 
         var log = new StringBuilder("[FullTestBuilder] 完成\n");
@@ -65,7 +65,7 @@ public static class FullTestSceneBuilder
             var debugInput = FindInScene<DebugInput>(scene);
             if (expansion == null || expansion.rig == null || expansion.head == null)
             {
-                Debug.LogError("[FullTestBuilder] 在 main.unity 找不到 ExpansionInput 或它的 Rig/Head 欄位,無法定位 OVRCameraRig。");
+                Debug.LogError("[FullTestBuilder] 在 MechanismTest.unity 找不到 ExpansionInput 或它的 Rig/Head 欄位,無法定位 OVRCameraRig。");
                 return;
             }
             Transform rig = expansion.rig;
@@ -199,7 +199,7 @@ public static class FullTestSceneBuilder
         return bg;
     }
 
-    // main.unity 裡 Meta 的 Interaction Rig 有自己的搖桿移動/轉向,會把 OVRCameraRig 移走,
+    // MechanismTest.unity 裡 Meta 的 Interaction Rig 有自己的搖桿移動/轉向,會把 OVRCameraRig 移走,
     // 跟 LizardLocomotion(雙手交替爬行)打架;瞬移的 NavMesh 也用不到。只關掉,不刪掉(要恢復把它打勾就好)。
     public static void DisableConflictingRigs(Scene scene, StringBuilder log)
     {
