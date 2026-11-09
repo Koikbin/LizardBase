@@ -37179,7 +37179,8 @@ MonoBehaviour:
   tongue: {fileID: 1815635434}
   tip: {fileID: 690136501}
   depthInput: {fileID: 628822099}
-  useDepth: 1
+  useDepth: 0
+  triggerAlsoWorks: 1
   expansion: {fileID: 1086801374}
   maxLength: 4
   catchDistance: 0.2
@@ -136124,6 +136125,8 @@ MonoBehaviour:
   forestZones: []
   forestBoundary: {fileID: 2089182793}
   pathBoundary: {fileID: 1470309939}
+  labBoundary: {fileID: 0}
+  predatorBoundary: {fileID: 0}
   entranceZones:
   - {fileID: 694423587}
   - {fileID: 1864926427}

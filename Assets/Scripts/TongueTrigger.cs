@@ -11,7 +11,10 @@ public class TongueTrigger : MonoBehaviour
     public Transform tongue;
     public Transform tip;
     public BlowoutDepthProbe depthInput;
+    [Tooltip("用吹龍(深度)控制舌頭。關掉 = 只用右手食指扳機(錄 demo 時比較穩)")]
     public bool useDepth = true;
+    [Tooltip("用吹龍時,右手食指扳機也能伸舌頭(兩個取比較大的)")]
+    public bool triggerAlsoWorks = true;
     [Tooltip("膨脹校準時右扳機是確認鍵,指定後校準期間扳機不會伸舌頭")]
     public ExpansionInput expansion;
 
@@ -109,9 +112,15 @@ public class TongueTrigger : MonoBehaviour
     float ReadInput()
     {
         if (DebugInput.Active) return DebugInput.Blow01;
-        if (useDepth && depthInput != null) return Mathf.Clamp01(depthInput.Length01);
-        if (expansion != null && expansion.IsCalibrating) return 0f;
-        return OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
+        // 右手食指扳機:按多深舌頭伸多長(膨脹校準時扳機是確認鍵,不伸舌頭)
+        float trigger = (expansion != null && expansion.IsCalibrating) ? 0f
+            : OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.RTouch);
+        if (useDepth && depthInput != null)
+        {
+            float depth = Mathf.Clamp01(depthInput.Length01);
+            return triggerAlsoWorks ? Mathf.Max(depth, trigger) : depth;
+        }
+        return trigger;
     }
 
     // 點在螞蟻的橢圓體範圍內時小於 1;橢圓體的長軸沿著身體方向。

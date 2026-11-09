@@ -86,6 +86,8 @@ public static class GameSetup
             DestroyChild(oldSystems.transform, "Entrances");
             DestroyChild(oldSystems.transform, "ForestBoundary");
             DestroyChild(oldSystems.transform, "PathBoundary");
+            DestroyChild(oldSystems.transform, "LabBoundary");
+            DestroyChild(oldSystems.transform, "PredatorBoundary");
         }
         var forestZones = LevelMarks.Zones(scene, GameZone.ZoneRole.Forest);
         var entranceZones = LevelMarks.Zones(scene, GameZone.ZoneRole.CaveEntrance);
@@ -284,6 +286,50 @@ public static class GameSetup
             else report.AppendLine($"⚠ 通道邊界 {pathEdge.Count} 個 + 太空艙 {spawnBoxes.Count} 個,合起來至少要 3 個才能連成範圍");
         }
 
+        // 廢棄實驗室(離開地洞之後的區域)
+        ForestBoundary lab = null;
+        var labEdge = LevelMarks.Of(marks, MarkKind.LabEdge);
+        if (labEdge.Count >= 3)
+        {
+            var labBoxes = labEdge.Select(m => LevelMarks.MeshWorldBounds(m)).ToList();
+            var groundSet = new HashSet<Transform>(LevelMarks.Of(marks, MarkKind.Ground).Select(m => m.transform));
+            var poly = LevelMarks.BuildLabPolygon(labBoxes, groundSet, labEdge.Select(m => m.transform));
+            if (poly != null)
+            {
+                var go = new GameObject("LabBoundary");
+                go.transform.SetParent(systems.transform, false);
+                lab = go.AddComponent<ForestBoundary>();
+                lab.polygon = poly;
+                lab.drawY = labBoxes.Average(b => b.center.y);
+                lab.gizmoColor = new Color(0.75f, 0.35f, 1f, 1f);
+                EditorUtility.SetDirty(lab);
+                report.AppendLine($"廢棄實驗室邊界:{labEdge.Count} 個物件包成一圈,再往外 {LevelMarks.LabEdgeMargin} m(超出地面的地方收回地面邊緣),面積 {ForestBoundary.Area(poly):F1} m²");
+            }
+        }
+        else if (labEdge.Count > 0) report.AppendLine($"⚠ 廢棄實驗室邊界只有 {labEdge.Count} 個物件,至少要 3 個才能連成範圍");
+
+        // 天敵區域
+        ForestBoundary predator = null;
+        var predatorEdge = LevelMarks.Of(marks, MarkKind.PredatorEdge);
+        if (predatorEdge.Count >= 3)
+        {
+            var boxes = predatorEdge.Select(m => LevelMarks.MeshWorldBounds(m)).ToList();
+            var groundSet = new HashSet<Transform>(LevelMarks.Of(marks, MarkKind.Ground).Select(m => m.transform));
+            var poly = LevelMarks.BuildAreaPolygon(boxes, groundSet, predatorEdge.Select(m => m.transform), LevelMarks.PredatorEdgeMargin);
+            if (poly != null)
+            {
+                var go = new GameObject("PredatorBoundary");
+                go.transform.SetParent(systems.transform, false);
+                predator = go.AddComponent<ForestBoundary>();
+                predator.polygon = poly;
+                predator.drawY = boxes.Average(b => b.center.y);
+                predator.gizmoColor = new Color(1f, 0.2f, 0.2f, 1f);
+                EditorUtility.SetDirty(predator);
+                report.AppendLine($"天敵區域邊界:{predatorEdge.Count} 個物件包成一圈,再往外 {LevelMarks.PredatorEdgeMargin} m(超出地面的地方收回地面邊緣),面積 {ForestBoundary.Area(poly):F1} m²");
+            }
+        }
+        else if (predatorEdge.Count > 0) report.AppendLine($"⚠ 天敵區域邊界只有 {predatorEdge.Count} 個物件,至少要 3 個才能連成範圍");
+
         // 石頭階梯:坑 = 深淵(掉進去遊戲結束);洞底只有出入口前面和礦石區可以走,坑兩側不能走(一定要跳石頭)
         GameZone abyss = null;
         var stones = LevelMarks.Of(marks, MarkKind.Stepping);
@@ -415,6 +461,8 @@ public static class GameSetup
         stages.forestZones = forestZones;
         stages.forestBoundary = forest;
         stages.pathBoundary = path;
+        stages.labBoundary = lab;
+        stages.predatorBoundary = predator;
         stages.abyssZone = abyss;
         stages.entranceZones = entranceZones;
         stages.caveBeacon = caveBeacon;

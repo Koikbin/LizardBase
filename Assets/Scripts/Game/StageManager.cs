@@ -27,6 +27,12 @@ public class StageManager : MonoBehaviour
     public GameZone[] forestZones;    // 森林範圍框
     public ForestBoundary forestBoundary;  // 森林邊界(標記的葉子連成的圈);框和邊界都沒有 = 不限制森林範圍
     public ForestBoundary pathBoundary;    // 通道(太空艙 → 森林);第一關在這裡也可以活動
+    public ForestBoundary labBoundary;     // 廢棄實驗室(離開地洞之後的區域);目前只標出範圍,還沒有限制活動
+
+    public bool InLab(Vector3 pos) => labBoundary != null && labBoundary.Contains(pos);
+
+    public ForestBoundary predatorBoundary;   // 天敵區域;目前只標出範圍,還沒有接到天敵的行為
+    public bool InPredatorZone(Vector3 pos) => predatorBoundary != null && predatorBoundary.Contains(pos);
     public GameZone[] entranceZones;  // 地洞出入口框:森林和洞穴之間的通道,兩個階段都能待
     public GameZone abyssZone;        // 石頭階梯下面的深淵:掉進去 = 遊戲結束
     [Tooltip("掉進深淵後,繼續往下掉幾秒(不會撞到坑底)")]
