@@ -74,6 +74,7 @@ public class TongueDepthDebug : MonoBehaviour
         LogGrid(mark);
 
         hud.text = (mark != null ? "== " + mark + " ==\n" : "")
+                 + $"Ray {RaycastModeHud}  from {(probe.measureFromMouth ? "mouth" : "eye")}\n"
                  + $"Hits  {probe.NearHitCount} / {probe.RayCount}  Line {probe.LineCellCount}\n"
                  + $"{probe.DescribeResult()}\n"
                  + $"Far   {farText}\n"
@@ -129,8 +130,12 @@ public class TongueDepthDebug : MonoBehaviour
                 .Append(mark != null ? "  == " + mark + " ==" : "")
                 .Append("  hits=").Append(probe.NearHitCount)
                 .Append("  hand=").Append(probe.HandIgnoredCount)
+                .Append("  手骨架=").Append(probe.TrackedHandSkeletons)
                 .Append("  far=").Append(probe.TipDistance > 0f ? (probe.TipDistance * 100f).ToString("F1") + "cm" : "--")
                 .Append("  input=").Append(tongue.RawInput.ToString("F2"))
+                .Append("  龍尾到嘴=").Append(probe.TipDistance > 0f ? (Vector3.Distance(probe.MouthPoint, probe.TipPoint) * 100f).ToString("F1") + "cm" : "--")
+                .Append("\n射線:").Append(RaycastMode)
+                .Append("  距離從:").Append(probe.measureFromMouth ? "嘴巴" : "眼睛")
                 .Append("\n結果: ").Append(probe.DescribeResult())
                 .Append('\n');
 
@@ -159,7 +164,45 @@ public class TongueDepthDebug : MonoBehaviour
         for (int i = 0; i < probe.ClusterCount; i++)
             gridText.Append("  ").Append(probe.DescribeCluster(i)).Append('\n');
 
+        // 同一輪、同樣的命中點,改成從嘴巴量的距離(公分)。只是記錄,不影響判定(除非勾了 measureFromMouth)
+        // 字母 = 屬於第幾塊;* = 有打到但不算(距離外或手把);. = 沒打到
+        gridText.Append("從嘴巴量(cm):\n");
+        for (int row = 0; row < rows; row++)
+        {
+            Pad(row + "排", 8);
+            for (int column = 0; column < columns; column++)
+            {
+                int cell = column + row * columns;
+                Pad(MouthCellText(cell), 6);
+            }
+            gridText.Append('\n');
+        }
+
         return gridText.ToString();
+    }
+
+    // 編譯開關決定 EnvironmentRaycastManager 用哪一種射線
+    private const string RaycastMode =
+#if META_USE_DEPTH_MANAGER_RAYCASTING
+        "深度圖版";
+#else
+        "系統原生版";
+#endif
+
+    // 頭顯內文字的字型沒有中文,用英文
+    private const string RaycastModeHud =
+#if META_USE_DEPTH_MANAGER_RAYCASTING
+        "DEPTHMAP";
+#else
+        "NATIVE";
+#endif
+
+    private string MouthCellText(int cell)
+    {
+        if (probe.CellStatuses[cell] != EnvironmentRaycastHitStatus.Hit) return ".";
+        string cm = Mathf.RoundToInt(probe.CellMouthDistances[cell] * 100f).ToString();
+        int cluster = probe.CellClusters[cell];
+        return cluster >= 0 ? (char)('A' + cluster) + cm : "*" + cm;
     }
 
     private void Pad(string text, int width)
