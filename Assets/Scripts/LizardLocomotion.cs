@@ -59,6 +59,18 @@ public class LizardLocomotion : MonoBehaviour
     [SerializeField] private bool allowGroundCalibration = true;
     private const string GroundHeightKey = "seatedGroundHeight";
 
+    [Header("重設視角:依照玩家現在的頭的位置,把視角放回蜥蜴身上")]
+    [Tooltip("打勾 = 開始時自動重設一次(頭部追蹤穩定後)。每個人坐的高度、位置不同,不重設容易穿進地裡或摸不到地面")]
+    [SerializeField] private bool autoResetViewOnStart = true;
+    [Tooltip("重設後,眼睛離遊戲地面的真實高度(公尺)。坐著時眼睛到大腿/桌面大約 0.55 m")]
+    [SerializeField] private float eyeHeightAboveGround = 0.55f;
+    [Tooltip("開始後等幾秒、頭部追蹤穩定了才自動重設")]
+    [SerializeField] private float autoResetDelay = 0.5f;
+    [Tooltip("左手 Y:隨時重設視角。另外長按 Meta 鍵重新置中時也會自動重設")]
+    [SerializeField] private bool allowManualReset = true;
+    private bool viewResetDone;
+    private float viewResetAt;
+
     [Header("回饋 / 除錯")]
     [Tooltip("抓住地面或牆面時手把震一下")]
     [SerializeField] private bool hapticOnGrab = true;
@@ -102,6 +114,10 @@ public class LizardLocomotion : MonoBehaviour
     private Vector3 airVelocity;
     private float lastJumpTime = -10f;
 
+    // 站在石頭階梯旁、比石頭低的坑壁上:抓不住,一直往下滑(SlipperySlope)
+    public bool IsSliding { get; private set; }
+    private float slideSpeed;
+
     public bool IsClimbing => (leftHand != null && leftHand.onClimbable)
                            || (rightHand != null && rightHand.onClimbable);
 
@@ -111,7 +127,8 @@ public class LizardLocomotion : MonoBehaviour
 
     private void Awake()
     {
-        if (PlayerPrefs.HasKey(GroundHeightKey)) seatedGroundHeight = PlayerPrefs.GetFloat(GroundHeightKey);
+        // 自動重設視角時,地面高度每次都依當下的人重新算,不沿用上一位玩家存的校準
+        if (!autoResetViewOnStart && PlayerPrefs.HasKey(GroundHeightKey)) seatedGroundHeight = PlayerPrefs.GetFloat(GroundHeightKey);
         leftHand = new Hand { name = "左手", side = -1f, anchor = leftHandAnchor };
         rightHand = new Hand { name = "右手", side = 1f, anchor = rightHandAnchor };
         if (cameraTransform != null) debugCamera = cameraTransform.GetComponent<Camera>();
@@ -122,13 +139,30 @@ public class LizardLocomotion : MonoBehaviour
         verticalVelocity = 0f;
         ResetHand(leftHand);
         ResetHand(rightHand);
+        viewResetDone = false;
+        viewResetAt = Time.time + autoResetDelay;
+        HookSystemRecenter();
     }
 
     private void OnDisable()
     {
         ResetHand(leftHand);
         ResetHand(rightHand);
+        if (hookedDisplay != null) hookedDisplay.RecenteredPose -= OnSystemRecenter;
+        hookedDisplay = null;
     }
+
+    private OVRDisplay hookedDisplay;
+    // OVRManager 可能比這個元件晚建立,所以 Update 裡也會再試
+    private void HookSystemRecenter()
+    {
+        if (hookedDisplay != null || OVRManager.display == null) return;
+        hookedDisplay = OVRManager.display;
+        hookedDisplay.RecenteredPose += OnSystemRecenter;
+    }
+
+    // 長按 Meta 鍵重新置中後,系統會把追蹤原點移到頭的位置,這時再把視角放回蜥蜴身上
+    private void OnSystemRecenter() => ResetView();
 
     private void Update()
     {
@@ -143,6 +177,9 @@ public class LizardLocomotion : MonoBehaviour
         else
         {
             ApplySeatedOffset();
+            HookSystemRecenter();
+            if (autoResetViewOnStart && !viewResetDone && Time.time >= viewResetAt && HeadTracked()) ResetView();
+            if (allowManualReset && OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.LTouch)) ResetView();
             if (allowGroundCalibration && OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.RTouch)) CalibrateGround();
             leftHand.position = leftHand.anchor.position;
             rightHand.position = rightHand.anchor.position;
@@ -201,6 +238,44 @@ public class LizardLocomotion : MonoBehaviour
         Vector3 lp = trackingSpace.localPosition;
         float y = seated ? -seatedGroundHeight : 0f;
         if (!Mathf.Approximately(lp.y, y)) trackingSpace.localPosition = new Vector3(lp.x, y, lp.z);
+    }
+
+    private bool HeadTracked()
+    {
+        if (cameraTransform == null) return false;
+        if (OVRManager.instance != null && !OVRManager.isHmdPresent) return false;
+        return cameraTransform.localPosition.sqrMagnitude > 0.0001f;   // 追蹤還沒開始時頭在原點
+    }
+
+    // 重設視角:
+    //   1. 高度:地面 = 頭現在的真實高度 - Eye Height Above Ground → 不管多高、坐多低,眼睛離地面都一樣高
+    //   2. 位置與方向:轉動、平移 TrackingSpace,讓頭剛好在蜥蜴身體正上方、面向蜥蜴的前方
+    // TrackingSpace 的本地單位 = 真實公尺;OVRCameraRig 的縮放(0.25)會把它變成蜥蜴大小。
+    public void ResetView()
+    {
+        if (trackingSpace == null || cameraTransform == null) return;
+        viewResetDone = true;
+
+        Vector3 head = cameraTransform.localPosition;   // 頭在 TrackingSpace 裡(真實公尺)
+        seatedGroundHeight = Mathf.Clamp(head.y - eyeHeightAboveGround, 0f, 1.5f);
+
+        Vector3 forward = cameraTransform.localRotation * Vector3.forward;
+        float headYaw = Mathf.Atan2(forward.x, forward.z) * Mathf.Rad2Deg;
+        Quaternion rot = Quaternion.Euler(0f, -headYaw, 0f);
+        Vector3 rotatedHead = rot * head;
+
+        trackingSpace.localRotation = rot;
+        trackingSpace.localPosition = new Vector3(-rotatedHead.x, seated ? -seatedGroundHeight : 0f, -rotatedHead.z);
+
+        // 手的位置瞬間跳了,不能算成一次拉動
+        ResetHand(leftHand);
+        ResetHand(rightHand);
+        if (leftHand != null && rightHand != null && Application.isPlaying)
+        {
+            Buzz(leftHand, 0.15f, 0.6f);
+            Buzz(rightHand, 0.15f, 0.6f);
+        }
+        Debug.Log($"[Loco] 重設視角:頭高 {head.y:F2} m → 地面 {seatedGroundHeight:F2} m(眼睛離地 {eyeHeightAboveGround:F2} m),轉 {-headYaw:F0}°");
     }
 
     // 右手 B:兩手現在的高度(真實)當作地面,稍微往下 3 公分,手放著就算摸到
@@ -293,9 +368,46 @@ public class LizardLocomotion : MonoBehaviour
         else
             verticalVelocity += gravity * deltaTime;
 
+        bodyMove += Slide(deltaTime);
+
         TryJump();
 
         characterController.Move(bodyMove + Vector3.up * (verticalVelocity * deltaTime));
+    }
+
+    // 腳下是會滑的坑壁 → 沿著坡往下滑,越滑越快;離開坑壁(或抓住石頭)就停。
+    // 不看 isGrounded:接近 Slope Limit 的陡坡上 CharacterController 常常判定沒著地,人會卡在坡上
+    private Vector3 Slide(float deltaTime)
+    {
+        var slope = SlipperySlope.Instance;
+        bool sliding = false;
+        Vector3 downhill = Vector3.zero;
+        float sin = 0f;
+        if (slope != null && !IsClimbing)
+        {
+            float s = SizeScale;
+            Vector3 origin = transform.position + Vector3.up * (0.1f * s);
+            // 斜坡上膠囊是側邊碰到坡面,正下方的坡面會比腳底低大約一個半徑,所以往下多找一點
+            float reach = 0.1f * s + 1.5f * characterController.radius + 2f * characterController.skinWidth;
+            bool landing = !airborne || (verticalVelocity < 0f && Time.time > lastJumpTime + 0.1f);   // 跳起來往上的時候不算
+            if (landing
+                && Physics.Raycast(origin, Vector3.down, out RaycastHit hit, reach, surfaceMask, QueryTriggerInteraction.Ignore)
+                && !hit.collider.transform.IsChildOf(transform)
+                && slope.IsSlippery(hit.collider, transform.position))
+            {
+                downhill = Vector3.ProjectOnPlane(Vector3.down, hit.normal);
+                sin = downhill.magnitude;                       // = sin(坡度)
+                if (sin > 0.05f) { downhill /= sin; sliding = true; }
+            }
+        }
+        if (!sliding) { slideSpeed = 0f; IsSliding = false; return Vector3.zero; }
+        if (!IsSliding && logGrabEvents) Debug.Log("[Loco] 踩到濕滑的坑壁,往下滑");
+        IsSliding = true;
+        airborne = false;               // 跳歪落在坑壁上 → 改成往下滑
+        airVelocity = Vector3.zero;
+        verticalVelocity = -1f;
+        slideSpeed = Mathf.Min(slope.maxSlideSpeed, slideSpeed + slope.slideAccel * sin * deltaTime);
+        return downhill * (slideSpeed * deltaTime);
     }
 
     // 兩手剛碰過地面、一起快速往下推 → 起跳。鍵盤測試:DebugInput 的 J 鍵 = 最用力的一跳
@@ -353,6 +465,8 @@ public class LizardLocomotion : MonoBehaviour
         {
             Collider surface = overlapResults[i];
             if (surface.transform.IsChildOf(transform)) continue;
+            // 石頭階梯旁、比石頭低的坑壁抓不住
+            if (SlipperySlope.Instance != null && SlipperySlope.Instance.IsSlippery(surface, position)) continue;
 
             if (surface.CompareTag(ClimbableTag))
                 touchingClimbable = true;

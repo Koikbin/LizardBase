@@ -28,6 +28,10 @@ public static class ColoredTerrainSetup
     const string SourceLightGroup = "燈光們";
     const string CopiedLightGroupName = "燈光們 (上色場地)";
     const string ExtrasRootName = "隊友新增物件 (上色場地)";
+    // 很大的複製物件(例如整片地面的複製品)放在背景外面:看得到,但 Setup Terrain 不會幫它做碰撞體
+    // (不然碰撞體檔案會變好幾倍大、Setup Terrain 要跑半小時,地面碰撞也會重複一份)
+    const string DisplayOnlyRootName = "隊友新增物件 (只顯示,不碰撞)";
+    const int DisplayOnlyTriangles = 100000;
 
     [MenuItem("Lizard/Apply Colored Terrain (上色場地)")]
     static void Apply() => Run(true);
@@ -111,19 +115,34 @@ public static class ColoredTerrainSetup
             }
 
             // 隊友複製出來的裝飾物件 → 放到我們場景的「隊友新增物件」底下,位置換算到 Background_場景3
-            foreach (var old in target.GetRootGameObjects().Where(g => g.name == ExtrasRootName).ToList())
+            // 放在背景底下(標記工具、Setup Terrain 只處理背景裡的物件);舊版放在場景最上層的也一起清掉
+            foreach (var old in target.GetRootGameObjects().Where(g => g.name == ExtrasRootName || g.name == DisplayOnlyRootName)
+                         .Concat(bg.transform.Cast<Transform>().Where(t => t.name == ExtrasRootName).Select(t => t.gameObject)).ToList())
                 Undo.DestroyObjectImmediate(old);
             if (srcTerrain != null && extras.Count > 0)
             {
                 var extrasRoot = new GameObject(ExtrasRootName);
-                SceneManager.MoveGameObjectToScene(extrasRoot, target);
-                extrasRoot.transform.SetPositionAndRotation(bg.transform.position, bg.transform.rotation);
-                extrasRoot.transform.localScale = bg.transform.lossyScale;
+                extrasRoot.transform.SetParent(bg.transform, false);   // 本地座標 = 背景座標
+                GameObject displayRoot = null;
                 foreach (var r in extras)
                 {
                     var rel = srcTerrain.transform.worldToLocalMatrix * r.transform.localToWorldMatrix;
                     var copy = new GameObject(r.gameObject.name);
-                    copy.transform.SetParent(extrasRoot.transform, false);
+                    var mesh = r.GetComponent<MeshFilter>().sharedMesh;
+                    Transform parent = extrasRoot.transform;
+                    if (mesh != null && Enumerable.Range(0, mesh.subMeshCount).Sum(i => (long)mesh.GetIndexCount(i)) / 3 > DisplayOnlyTriangles)
+                    {
+                        if (displayRoot == null)
+                        {
+                            displayRoot = new GameObject(DisplayOnlyRootName);
+                            SceneManager.MoveGameObjectToScene(displayRoot, target);
+                            displayRoot.transform.SetPositionAndRotation(bg.transform.position, bg.transform.rotation);
+                            displayRoot.transform.localScale = bg.transform.lossyScale;
+                            Undo.RegisterCreatedObjectUndo(displayRoot, "Copy Teammate Extras");
+                        }
+                        parent = displayRoot.transform;
+                    }
+                    copy.transform.SetParent(parent, false);
                     copy.transform.localPosition = rel.GetColumn(3);
                     copy.transform.localRotation = rel.rotation;
                     copy.transform.localScale = rel.lossyScale;

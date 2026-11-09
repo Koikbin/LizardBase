@@ -13,6 +13,7 @@ public static class PlayerSize
     public static float BodyLength => TerrainSetup.AntLength * 2f;     // 螞蟻的兩倍
     public static float Scale => BodyLength / ReferenceHeight;
     public const float TongueLength = 1f;                              // 舌頭最長(公尺,世界座標;膨脹時再放大)
+    public const float NearClipReal = 0.08f;                           // 相機近裁切面(真實公尺,乘上縮放後 = 0.02)
 
     public static void Apply(CharacterController cc, ExpansionInput expansion, StringBuilder report, TongueTrigger tongue = null)
     {
@@ -29,9 +30,18 @@ public static class PlayerSize
             cc.skinWidth = Mathf.Max(0.005f, 0.03f * s);     // 0.0075
             cc.center = new Vector3(0f, cc.height * 0.5f + cc.skinWidth, 0f);
             cc.stepOffset = 0.3f * s;                        // 0.075
-            cc.slopeLimit = 50f;
+            // 跟 TerrainSetup 的峭壁門檻一致:比這個緩的都是「地面」,要能走上去;
+            // 比這個陡的是可以用 Grip 攀爬的峭壁。原本 50 度會讓 50~60 度的坡兩邊都不算,卡住玩家
+            cc.slopeLimit = TerrainSetup.ClimbAngleDeg;
             cc.minMoveDistance = 0f;
             EditorUtility.SetDirty(cc);
+        }
+        if (expansion != null && expansion.cam != null)
+        {
+            // 近裁切面是世界單位,不會跟著 rig 縮放;0.1 在縮小 0.25 倍時等於眼前 40 公分都看不到,
+            // 低頭爬行時地面會被切掉、看穿到地下。改成真實 8 公分
+            expansion.cam.nearClipPlane = NearClipReal * s;
+            EditorUtility.SetDirty(expansion.cam);
         }
         if (expansion != null)
         {

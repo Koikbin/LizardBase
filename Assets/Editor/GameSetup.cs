@@ -85,6 +85,7 @@ public static class GameSetup
         {
             DestroyChild(oldSystems.transform, "Entrances");
             DestroyChild(oldSystems.transform, "ForestBoundary");
+            DestroyChild(oldSystems.transform, "PathBoundary");
         }
         var forestZones = LevelMarks.Zones(scene, GameZone.ZoneRole.Forest);
         var entranceZones = LevelMarks.Zones(scene, GameZone.ZoneRole.CaveEntrance);
@@ -260,14 +261,45 @@ public static class GameSetup
         }
         else if (edge.Count > 0) report.AppendLine($"⚠ 森林邊界只有 {edge.Count} 個點,至少要 3 個才能連成範圍");
 
+        // 通道(太空艙 → 森林):通道邊界標記 + 太空艙包成一圈,第一關也可以在這裡活動
+        ForestBoundary path = null;
+        var pathEdge = LevelMarks.Of(marks, MarkKind.PathEdge);
+        if (pathEdge.Count > 0)
+        {
+            var pathBoxes = pathEdge.Select(m => m.GetComponent<Renderer>().bounds).ToList();
+            var spawnBoxes = LevelMarks.Of(marks, MarkKind.Spawn).Select(m => LevelMarks.MeshWorldBounds(m)).ToList();
+            var groundSet = new HashSet<Transform>(LevelMarks.Of(marks, MarkKind.Ground).Select(m => m.transform));
+            var poly = LevelMarks.BuildPathPolygon(pathBoxes, spawnBoxes, groundSet);
+            if (poly != null)
+            {
+                var go = new GameObject("PathBoundary");
+                go.transform.SetParent(systems.transform, false);
+                path = go.AddComponent<ForestBoundary>();
+                path.polygon = poly;
+                path.drawY = pathBoxes.Average(b => b.center.y);
+                path.gizmoColor = new Color(1f, 0.6f, 0.15f, 1f);
+                EditorUtility.SetDirty(path);
+                report.AppendLine($"通道邊界(太空艙→森林):{pathEdge.Count} 個物件 + 太空艙 {spawnBoxes.Count} 個物件包成一圈,再往外 {LevelMarks.PathEdgeMargin} m(超出地面的地方收回地面邊緣),面積 {ForestBoundary.Area(poly):F1} m²");
+            }
+            else report.AppendLine($"⚠ 通道邊界 {pathEdge.Count} 個 + 太空艙 {spawnBoxes.Count} 個,合起來至少要 3 個才能連成範圍");
+        }
+
         // 石頭階梯:坑 = 深淵(掉進去遊戲結束);洞底只有出入口前面和礦石區可以走,坑兩側不能走(一定要跳石頭)
         GameZone abyss = null;
         var stones = LevelMarks.Of(marks, MarkKind.Stepping);
         DestroyChild(systems.transform, "AbyssZone");
         if (caveVolume != null) caveVolume.zone = null;
+        var oldSlope = systems.GetComponent<SlipperySlope>();
+        if (stones.Count == 0 && oldSlope != null) Object.DestroyImmediate(oldSlope);
         if (stones.Count > 0)
         {
             var sb = stones.Select(st => st.GetComponent<Renderer>().bounds).ToList();
+            // 石頭旁邊、比石頭低的坑壁(地洞底標記)抓不住、會往下滑
+            var slope = GetOrAdd<SlipperySlope>(systems);
+            slope.stones = sb.ToArray();
+            slope.surfaces = LevelMarks.Of(marks, MarkKind.CaveFloor).Select(m => m.transform).ToArray();
+            EditorUtility.SetDirty(slope);
+            report.AppendLine($"  濕滑坑壁:石頭 {slope.range} m 以內、比最近那塊石頭頂面低的地洞底({slope.surfaces.Length} 個物件)抓不住、站上去會往下滑");
             float abyssY = sb.Min(x => x.max.y) - AbyssBelowStones;
             report.AppendLine($"石頭階梯 {stones.Count} 塊:最低的頂面往下 {AbyssBelowStones} m(高度 {abyssY:F2})以下 = 深淵");
             foreach (var pair in stones.Zip(sb, (m, bb) => (m, bb)).OrderBy(x => -x.bb.center.z))
@@ -326,7 +358,8 @@ public static class GameSetup
         }
 
         bool hasForestLimit = forestZones.Length > 0 || forest != null;
-        System.Func<Vector3, bool> inForest = p => !hasForestLimit || forestZones.Any(z => z.Contains(p)) || (forest != null && forest.Contains(p));
+        System.Func<Vector3, bool> inForest = p => !hasForestLimit || forestZones.Any(z => z.Contains(p)) || (forest != null && forest.Contains(p))
+                                                   || (path != null && path.Contains(p));
         if (hasForestLimit)
         {
             int outside = droplets.Count(d => !inForest(d.WorldBounds().center));
@@ -370,7 +403,7 @@ public static class GameSetup
         }
         else report.AppendLine("⚠ 沒有地洞標記也沒有礦石,沒有建立洞穴範圍");
         if (forestZones.Length > 0) report.AppendLine($"森林範圍框 {forestZones.Length} 個");
-        if (hasForestLimit) report.AppendLine("第一關只能在森林範圍(框 + 邊界圈)和地洞出入口裡活動");
+        if (hasForestLimit) report.AppendLine("第一關只能在森林範圍(框 + 邊界圈)" + (path != null ? "、通道(太空艙→森林)" : "") + "和地洞出入口裡活動");
 
         // ---- 4. 系統 ----
         var resources = GetOrAdd<LizardResources>(systems);
@@ -381,6 +414,7 @@ public static class GameSetup
         stages.exitZone = exitZone;
         stages.forestZones = forestZones;
         stages.forestBoundary = forest;
+        stages.pathBoundary = path;
         stages.abyssZone = abyss;
         stages.entranceZones = entranceZones;
         stages.caveBeacon = caveBeacon;

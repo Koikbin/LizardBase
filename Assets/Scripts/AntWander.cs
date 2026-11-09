@@ -47,6 +47,10 @@ public class AntWander : MonoBehaviour, ITongueEdible
     [Header("貼地")]
     public LayerMask groundMask;             // 哪些 Layer 算地面;Nothing = 不貼地
     public float groundOffset = 0f;          // 模型陷進地面時調高
+    [Tooltip("自動把模型最低點(腳)對齊地面。模型的原點不在腳底時,不勾會浮在空中或陷進地面")]
+    public bool autoFootOffset = true;
+    [Tooltip("身體跟著地面坡度傾斜(前後左右各量一次地面高度),斜坡上頭尾都貼地")]
+    public bool alignToSlope = true;
     [Tooltip("一步能上下的高度(公尺)。前方地面高低差超過這個值就當作峭壁邊緣,不走過去。0 = 不限制")]
     public float maxStepHeight = 0f;
 
@@ -77,6 +81,10 @@ public class AntWander : MonoBehaviour, ITongueEdible
 
     Vector3 home;
     Vector3 target;
+    float footOffset;                    // 模型最低點比原點高多少(世界座標,直立時)
+    Quaternion yawRotation = Quaternion.identity;   // 只有水平方向的轉向;實際旋轉 = 坡度傾斜 * 這個
+    Quaternion slopeTilt = Quaternion.identity;
+    float bodyHalfLength = 0.05f, bodyHalfWidth = 0.03f;
     float nextRetarget;
     float fleeUntil;
     Transform holder;
@@ -108,6 +116,9 @@ public class AntWander : MonoBehaviour, ITongueEdible
     {
         home = transform.position;
         renderers = GetComponentsInChildren<Renderer>();
+        MeasureModel();
+        Vector3 f0 = transform.forward; f0.y = 0f;
+        yawRotation = f0.sqrMagnitude > 0.0001f ? Quaternion.LookRotation(f0.normalized, Vector3.up) : Quaternion.identity;
         if (HasPath)
         {
             // 帶狀通道:開場散布在整條通道上,不要全部擠在入口
@@ -224,11 +235,77 @@ public class AntWander : MonoBehaviour, ITongueEdible
         else blockedTime = 0f;
 
         transform.position = new Vector3(next.x, hadGround ? groundY : pos.y, next.z);
-        if (move.sqrMagnitude > 0.0001f)
+        Vector3 flatMove = new Vector3(move.x, 0f, move.z);
+        if (flatMove.sqrMagnitude > 0.0001f)
         {
-            Quaternion look = Quaternion.LookRotation(move.normalized, Vector3.up) * Quaternion.Euler(0, yawOffsetDeg, 0);
-            transform.rotation = Quaternion.Slerp(transform.rotation, look, 8f * Time.deltaTime);
+            Quaternion look = Quaternion.LookRotation(flatMove.normalized, Vector3.up) * Quaternion.Euler(0, yawOffsetDeg, 0);
+            yawRotation = Quaternion.Slerp(yawRotation, look, 8f * Time.deltaTime);
         }
+        ApplyRotation(hadGround);
+    }
+
+    // 模型的腳在哪裡:用每個網格的範圍(不用讀頂點,打包後網格不一定能讀)換算到螞蟻自己的座標
+    void MeasureModel()
+    {
+        footOffset = 0f;
+        var filters = GetComponentsInChildren<MeshFilter>(true);
+        if (filters.Length == 0) return;
+        Matrix4x4 toRoot = transform.worldToLocalMatrix;
+        float minY = float.MaxValue;
+        Bounds local = new Bounds();
+        bool first = true;
+        foreach (var mf in filters)
+        {
+            if (mf.sharedMesh == null) continue;
+            Matrix4x4 m = toRoot * mf.transform.localToWorldMatrix;
+            Bounds b = mf.sharedMesh.bounds;
+            for (int i = 0; i < 8; i++)
+            {
+                Vector3 c = b.center + Vector3.Scale(b.extents, new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+                Vector3 p = m.MultiplyPoint3x4(c);
+                minY = Mathf.Min(minY, p.y);
+                if (first) { local = new Bounds(p, Vector3.zero); first = false; } else local.Encapsulate(p);
+            }
+        }
+        if (first) return;
+        Vector3 s = transform.lossyScale;
+        if (autoFootOffset) footOffset = minY * s.y;
+        // 身體前後/左右的一半長度(量坡度用),扣掉 yawOffsetDeg 的方向
+        Vector3 size = Vector3.Scale(local.size, s);
+        float yaw = Mathf.Abs(Mathf.DeltaAngle(0f, yawOffsetDeg));
+        bool sideways = yaw > 45f && yaw < 135f;
+        bodyHalfLength = Mathf.Max(0.005f, 0.5f * (sideways ? size.x : size.z));
+        bodyHalfWidth = Mathf.Max(0.005f, 0.5f * (sideways ? size.z : size.x));
+    }
+
+    // 旋轉 = 坡度傾斜 * 水平轉向。前後、左右各量一次地面高度,身體跟著地面斜
+    void ApplyRotation(bool grounded)
+    {
+        Quaternion tilt = Quaternion.identity;
+        if (alignToSlope && grounded)
+        {
+            Vector3 p = transform.position;
+            Vector3 fwd = BodyForwardOf(yawRotation);
+            Vector3 side = Vector3.Cross(Vector3.up, fwd);
+            if (TryGetGroundY(p + fwd * bodyHalfLength, out float yf) && TryGetGroundY(p - fwd * bodyHalfLength, out float yb) &&
+                TryGetGroundY(p + side * bodyHalfWidth, out float yr) && TryGetGroundY(p - side * bodyHalfWidth, out float yl))
+            {
+                Vector3 alongF = fwd * (2f * bodyHalfLength) + Vector3.up * (yf - yb);
+                Vector3 alongS = side * (2f * bodyHalfWidth) + Vector3.up * (yr - yl);
+                Vector3 n = Vector3.Cross(alongF, alongS).normalized;
+                if (n.y < 0f) n = -n;
+                if (Vector3.Angle(n, Vector3.up) < 50f) tilt = Quaternion.FromToRotation(Vector3.up, n);   // 太陡(峭壁邊緣)就不斜
+            }
+        }
+        slopeTilt = Quaternion.Slerp(slopeTilt, tilt, 10f * Time.deltaTime);
+        transform.rotation = slopeTilt * yawRotation;
+    }
+
+    Vector3 BodyForwardOf(Quaternion r)
+    {
+        Vector3 f = r * Quaternion.Euler(0, -yawOffsetDeg, 0) * Vector3.forward;
+        f.y = 0;
+        return f.sqrMagnitude < 0.0001f ? Vector3.forward : f.normalized;
     }
 
     // 有路線的螞蟻受驚時的速度:先爆衝遠離舌尖,之後忽跑忽停地亂竄。
@@ -372,7 +449,8 @@ public class AntWander : MonoBehaviour, ITongueEdible
         float half = path.stripWidth * 0.5f;
         laneTarget = Random.Range(-half, half);
         transform.position = path.StripPoint(along, laneTarget);
-        transform.rotation = Quaternion.LookRotation(path.StripDir, Vector3.up) * Quaternion.Euler(0, yawOffsetDeg, 0);
+        yawRotation = Quaternion.LookRotation(path.StripDir, Vector3.up) * Quaternion.Euler(0, yawOffsetDeg, 0);
+        transform.rotation = slopeTilt * yawRotation;
         returning = false;
     }
 
@@ -401,7 +479,7 @@ public class AntWander : MonoBehaviour, ITongueEdible
             if (groundHits[i].distance < bestD)
             {
                 bestD = groundHits[i].distance;
-                y = groundHits[i].point.y + groundOffset;
+                y = groundHits[i].point.y + groundOffset - footOffset;
                 found = true;
             }
         }

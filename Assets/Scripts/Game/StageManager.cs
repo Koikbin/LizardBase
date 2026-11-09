@@ -26,6 +26,7 @@ public class StageManager : MonoBehaviour
     public CaveVolume caveVolume;     // 洞穴範圍(地洞頂/地洞底標記算出來的精準空間),優先使用
     public GameZone[] forestZones;    // 森林範圍框
     public ForestBoundary forestBoundary;  // 森林邊界(標記的葉子連成的圈);框和邊界都沒有 = 不限制森林範圍
+    public ForestBoundary pathBoundary;    // 通道(太空艙 → 森林);第一關在這裡也可以活動
     public GameZone[] entranceZones;  // 地洞出入口框:森林和洞穴之間的通道,兩個階段都能待
     public GameZone abyssZone;        // 石頭階梯下面的深淵:掉進去 = 遊戲結束
     [Tooltip("掉進深淵後,繼續往下掉幾秒(不會撞到坑底)")]
@@ -123,7 +124,8 @@ public class StageManager : MonoBehaviour
         bool inCave = InCave(pos);
         bool inEntrance = InAny(entranceZones, pos);
         bool hasForestLimit = (forestZones != null && forestZones.Length > 0) || forestBoundary != null;
-        bool inForest = !hasForestLimit || InAny(forestZones, pos) || (forestBoundary != null && forestBoundary.Contains(pos));
+        bool inForest = !hasForestLimit || InAny(forestZones, pos) || (forestBoundary != null && forestBoundary.Contains(pos))
+                        || (pathBoundary != null && pathBoundary.Contains(pos));
         bool hasEntrances = entranceZones != null && entranceZones.Length > 0;
         Region region = inCave ? Region.Cave : inEntrance ? Region.Entrance : Region.Outside;
         // 洞裡 ↔ 洞外 直接切換(沒經過出入口)= 從縫隙鑽過去

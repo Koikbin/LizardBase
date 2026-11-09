@@ -16,7 +16,7 @@ using UnityEngine.SceneManagement;
 //   換新版背景模型(物件重新編號)時,會用 頂點數 + 位置 自動對回同一個物件。
 // 範圍框(森林範圍、地洞出入口):場景裡 LevelMarkers 底下的 GameZone 方塊,自己拖拉調整大小。
 //   也會存進 LevelMarks.json,重建場景(Build FullTest Scene)時自動放回來。
-public enum MarkKind { Ground, Water, Ore, CaveCeiling, CaveFloor, CaveEntrance, ForestEdge, Spawn, Stepping, Door }
+public enum MarkKind { Ground, Water, Ore, CaveCeiling, CaveFloor, CaveEntrance, ForestEdge, Spawn, Stepping, Door, PathEdge }
 
 [Serializable]
 public class MeshMark
@@ -67,6 +67,7 @@ public static class LevelMarks
             case MarkKind.ForestEdge: return "森林邊界";
             case MarkKind.Spawn: return "出生點(太空艙)";
             case MarkKind.Stepping: return "石頭階梯";
+            case MarkKind.PathEdge: return "通道邊界(太空艙→森林)";
             default: return "可穿過(艙門)";
         }
     }
@@ -84,6 +85,7 @@ public static class LevelMarks
             case MarkKind.ForestEdge: return new Color(0.1f, 0.6f, 0.15f);
             case MarkKind.Spawn: return new Color(0.9f, 0.95f, 1f);
             case MarkKind.Stepping: return new Color(0.55f, 0.65f, 0.8f);
+            case MarkKind.PathEdge: return new Color(1f, 0.6f, 0.15f);
             default: return new Color(1f, 0.4f, 0.6f);
         }
     }
@@ -382,9 +384,27 @@ public static class LevelMarks
     static bool cacheDirty = true;
     static int cacheScene;
     static readonly List<(Bounds b, MarkKind k)> cacheBounds = new List<(Bounds, MarkKind)>();
-    static Vector2[] cacheForest;
-    static float cacheForestY;
+    static Vector2[] cacheForest, cachePath;
+    static float cacheForestY, cachePathY;
     public const float ForestEdgeMargin = 0.5f;   // 森林邊界從標記物件的外緣再往外推多少(公尺),超出地面會收回地面邊緣
+
+    // 通道(太空艙 → 森林):「通道邊界」標記 + 出生點(太空艙)一起包成一圈,所以太空艙裡面也算在通道內。
+    // 收回地面邊緣時,太空艙底下不是地面也不收(太空艙的地板不是地面標記)。
+    public const float PathEdgeMargin = 1.5f;     // 通道邊界往外推比森林多,超出地面的地方一樣收回地面邊緣
+
+    public static Vector2[] BuildPathPolygon(IList<Bounds> edge, IList<Bounds> spawn, HashSet<Transform> groundSet, float margin = PathEdgeMargin)
+    {
+        var all = edge.Concat(spawn).ToList();
+        if (edge.Count == 0 || all.Count < 3) return null;
+        Func<Vector2, bool> onGround = null;
+        if (groundSet != null && groundSet.Count > 0)
+        {
+            float pad = margin + 0.2f;
+            onGround = p => spawn.Any(b => Mathf.Abs(p.x - b.center.x) <= b.extents.x + pad && Mathf.Abs(p.y - b.center.z) <= b.extents.z + pad)
+                            || IsOverGround(p, groundSet);
+        }
+        return ForestBoundary.BuildEnvelope(all, margin, 48, onGround);
+    }
 
     // 這個水平位置的正下方有沒有標記成地面的物件(用 Setup Terrain 產生的碰撞體)
     public static bool IsOverGround(Vector2 xz, HashSet<Transform> groundSet)
@@ -422,7 +442,7 @@ public static class LevelMarks
         if (!cacheDirty && cacheScene == scene.handle) return;
         cacheDirty = false;
         cacheScene = scene.handle;
-        cacheBounds.Clear(); cacheIds.Clear(); CacheWarnings.Clear(); CacheCounts.Clear(); cacheForest = null;
+        cacheBounds.Clear(); cacheIds.Clear(); CacheWarnings.Clear(); CacheCounts.Clear(); cacheForest = null; cachePath = null;
         var bg = FindBackground(scene);
         if (bg == null) return;
         foreach (var p in Resolve(bg, Load(), CacheWarnings))
@@ -436,11 +456,20 @@ public static class LevelMarks
             }
         }
         var edge = cacheBounds.Where(x => x.k == MarkKind.ForestEdge).Select(x => x.b).ToList();
+        var pathEdge = cacheBounds.Where(x => x.k == MarkKind.PathEdge).Select(x => x.b).ToList();
+        HashSet<Transform> groundSet = null;
+        if (edge.Count >= 3 || pathEdge.Count > 0)
+            groundSet = new HashSet<Transform>(cacheIds.Keys.Select(id => EditorUtility.InstanceIDToObject(id) as GameObject)
+                .Where(g => g != null && cacheIds[g.GetInstanceID()].Contains(MarkKind.Ground)).Select(g => g.transform));
+        if (pathEdge.Count > 0)
+        {
+            var spawn = cacheBounds.Where(x => x.k == MarkKind.Spawn).Select(x => x.b).ToList();
+            cachePath = BuildPathPolygon(pathEdge, spawn, groundSet);
+            cachePathY = pathEdge.Average(b => b.center.y);
+        }
         if (edge.Count >= 3)
         {
             // 跟 Setup Game 用一樣的算法,預覽就是套用後的範圍
-            var groundSet = new HashSet<Transform>(cacheIds.Keys.Select(id => EditorUtility.InstanceIDToObject(id) as GameObject)
-                .Where(g => g != null && cacheIds[g.GetInstanceID()].Contains(MarkKind.Ground)).Select(g => g.transform));
             cacheForest = ForestBoundary.BuildEnvelope(edge, ForestEdgeMargin, 48,
                 groundSet.Count > 0 ? (System.Func<Vector2, bool>)(p => IsOverGround(p, groundSet)) : null);
             cacheForestY = edge.Average(b => b.center.y);
@@ -462,6 +491,14 @@ public static class LevelMarks
             var pts = cacheForest.Select(p => new Vector3(p.x, cacheForestY, p.y)).ToList();
             pts.Add(pts[0]);
             Handles.color = KindColor(MarkKind.ForestEdge);
+            Handles.DrawAAPolyLine(4f, pts.ToArray());
+        }
+        if (cachePath != null)
+        {
+            // 通道邊界預覽(太空艙 → 森林)
+            var pts = cachePath.Select(p => new Vector3(p.x, cachePathY, p.y)).ToList();
+            pts.Add(pts[0]);
+            Handles.color = KindColor(MarkKind.PathEdge);
             Handles.DrawAAPolyLine(4f, pts.ToArray());
         }
     }
@@ -549,6 +586,8 @@ public class LevelMarkWindow : EditorWindow
             "地洞出入口(圈):洞口的圓圈,自動產生從洞底到圈上方的出入口範圍,要從圈中間穿過\n" +
             "森林邊界:最外圍的葉子/草,至少 3 個,整個包進去再往外推(Scene 視窗會畫出深綠色的線)\n" +
             "出生點(太空艙):玩家出生在這些物件的正中間、站在裡面的地板上,面向森林(碰撞體雙面)\n" +
+            "通道邊界(太空艙→森林):太空艙到森林之間那塊地的最外圍物件,跟太空艙一起包成一圈(Scene 視窗畫橘色的線);" +
+            "第一關可以在 森林 + 通道 裡活動,走出去會被推回來\n" +
             "石頭階梯:地洞裡要跳過去的石頭;坑裡低於最低石頭頂面 1 公尺 = 深淵,掉進去遊戲結束;" +
             "洞底只有出入口前面和礦石區能走,坑兩側踩上去會被推回來\n" +
             "可穿過(艙門):沒有碰撞體、而且隱藏(像門打開了),例如太空艙的艙門", MessageType.None);

@@ -1,6 +1,7 @@
 using UnityEngine;
 
-// 舌頭:吹龍(深度)或右手扳機或鍵盤假輸入 → 舌頭伸出 → 舌尖碰到能吃的東西就黏住 → 縮回就吃掉。
+// 舌頭:吹龍(深度)或右手扳機或鍵盤假輸入 → 舌頭伸出 → 舌頭任何一段碰到能吃的東西就黏住
+// (最靠近嘴巴的優先,舌頭停在那裡不穿過去)→ 縮回就吃掉。
 // 能吃的東西:螞蟻(AntWander → 毒素)、TongueFood(水珠 → 水分、礦石 → 礦石能量),都實作 ITongueEdible。
 // 掛在 TonguePivot。tongue 指向 Tongue 立方體,tip 指向 Tip。
 // 注意:這份腳本會自己設定 tongue 的 Scale Z 與 Local Position Z,tip 的 Local Position Z,
@@ -33,6 +34,9 @@ public class TongueTrigger : MonoBehaviour
     [Tooltip("抓取範圍的上下總高度(公尺)。")]
     public float catchHeight = 0.3f;
 
+    [Tooltip("沿著舌頭檢查的間隔(公尺,真實大小)。整條舌頭碰到都算,越小越準但越耗效能。")]
+    public float catchStep = 0.03f;
+
     // 舌頭跟著玩家大小縮放(TonguePivot 在相機底下);抓取範圍也跟著縮放
     public float SizeScale => transform.lossyScale.x;
 
@@ -45,6 +49,8 @@ public class TongueTrigger : MonoBehaviour
     bool armed = true;
     float prevExtension;
     float windowEnd = -1f;
+    float caughtLength;   // 黏住時的舌頭長度
+    readonly System.Collections.Generic.List<ITongueEdible> candidates = new System.Collections.Generic.List<ITongueEdible>();
 
     void Awake()
     {
@@ -66,6 +72,8 @@ public class TongueTrigger : MonoBehaviour
         Extension = Mathf.Lerp(Extension, RawInput, k);
 
         float len = Extension * maxLength;
+        // 黏住東西後,舌頭停在黏到的位置,不會穿過去繼續伸長(縮回照常)
+        if (Caught != null) len = Mathf.Min(len, caughtLength);
         if (tongue != null)
         {
             var s = tongue.localScale; s.z = Mathf.Max(0.001f, len); tongue.localScale = s;
@@ -120,17 +128,40 @@ public class TongueTrigger : MonoBehaviour
         return x * x + y * y + z * z;
     }
 
+    // 整條舌頭都算:從嘴巴往舌尖每隔 catchStep 取一個點,第一個碰到東西的點就抓那個東西
+    // (最靠近嘴巴的優先),舌頭停在那個長度,不會穿過去。
     void TryCatch()
     {
-        ITongueEdible best = null;
-        float bestD = 1f;
-        Vector3 p = tip.position;
-        foreach (var a in AntWander.All) Consider(a, p, ref best, ref bestD);
-        foreach (var f in TongueFood.All) Consider(f, p, ref best, ref bestD);
-        if (best != null)
+        Transform space = tip.parent != null ? tip.parent : transform;
+        Vector3 tipLocal = tip.localPosition;
+        float len = tipLocal.z;
+        float step = Mathf.Max(0.005f, catchStep * SizeScale / Mathf.Max(0.0001f, space.lossyScale.z));   // 換成 TonguePivot 座標
+        int count = Mathf.Max(1, Mathf.CeilToInt(len / step));
+
+        // 先篩出舌頭附近的東西,避免每個點都把全部螞蟻、水珠算一遍
+        var segment = new Bounds(space.TransformPoint(new Vector3(tipLocal.x, tipLocal.y, 0f)), Vector3.zero);
+        segment.Encapsulate(tip.position);
+        segment.Expand(2f * Mathf.Max(catchLength, catchWidth, catchHeight) * SizeScale);
+        candidates.Clear();
+        foreach (var a in AntWander.All) if (segment.Contains(a.transform.position)) candidates.Add(a);
+        foreach (var f in TongueFood.All) if (segment.Intersects(f.WorldBounds())) candidates.Add(f);
+        if (candidates.Count == 0) return;
+
+        for (int i = 1; i <= count; i++)
         {
+            float z = Mathf.Min(len, i * step);
+            Vector3 p = space.TransformPoint(new Vector3(tipLocal.x, tipLocal.y, z));
+            ITongueEdible best = null;
+            float bestD = 1f;
+            foreach (var e in candidates) Consider(e, p, ref best, ref bestD);
+            if (best == null) continue;
+
+            caughtLength = z;
+            // 舌尖先移到抓到的位置,讓 OnCaught 黏在正確的地方
+            tip.localPosition = new Vector3(tipLocal.x, tipLocal.y, z);
             best.OnCaught(tip);
             Caught = best;
+            return;
         }
     }
 
