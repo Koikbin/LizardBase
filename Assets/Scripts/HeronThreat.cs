@@ -62,6 +62,12 @@ public class HeronThreat : MonoBehaviour
     public float expandThreshold = 0.6f;
     [Tooltip("擋下一口後,雙手要先收回到膨脹程度低於這個值,下一口才算數。逼玩家每一口都重新撐開。")]
     public float rearmBelow = 0.3f;
+    [Tooltip("膨脹會隨時間衰退,逼玩家抓時機撐開。開啟時擋下後由衰退機制要求收手,rearmBelow 只在鍵盤測試模式使用。")]
+    public bool enableExpansionDecay = true;
+    [Tooltip("擋下一口後,膨脹在幾秒內洩掉。")]
+    public float blockDeflateSeconds = 0.4f;
+    [Tooltip("擋得下時在玩家周圍顯示防禦網。")]
+    public bool showDefenseNet = true;
     [Tooltip("判定時看「預告結束前這麼多秒」內膨脹的最大值,避免手抖一下就失敗。")]
     public float biteGraceSeconds = 0.15f;
 
@@ -87,7 +93,7 @@ public class HeronThreat : MonoBehaviour
     [Tooltip("被擋下後被撞開、站不穩的時間(秒)。")]
     public float staggerSeconds = 0.4f;
     [Tooltip("被撞開結束後,隔幾秒再咬下一口。")]
-    public float biteInterval = 1.5f;
+    public float biteInterval = 3f;
     [Tooltip("被擋下幾口後放棄、走回起點。")]
     public int bitesToGiveUp = 3;
 
@@ -98,6 +104,12 @@ public class HeronThreat : MonoBehaviour
     public float hapticAmplitude = 0.7f;
     [Tooltip("震動持續幾秒。")]
     public float hapticSeconds = 0.2f;
+    [Tooltip("被咬中時讓兩隻手把震動。")]
+    public bool hapticOnCaught = true;
+    [Tooltip("被咬中的震動強度(0~1)。")]
+    public float caughtHapticAmplitude = 1f;
+    [Tooltip("被咬中的震動持續幾秒。")]
+    public float caughtHapticSeconds = 0.5f;
     [Tooltip("預告(準備咬)開始時播放的音效(可不填)。")]
     public AudioClip windupClip;
     [Tooltip("擋下時播放的音效(可不填)。")]
@@ -117,6 +129,17 @@ public class HeronThreat : MonoBehaviour
     public State CurrentState { get; private set; } = State.Hidden;
     public BitePhase CurrentBitePhase { get; private set; } = BitePhase.Waiting;
     public int BlockedCount => blockedCount;
+
+    // ---- 給 DefenseNet 看 ----
+    // 現在被咬的話擋不擋得下
+    public bool WouldBlock => heronEnabled && ReadExpand() >= expandThreshold;
+    // 目前的防禦還能維持幾秒
+    public float DefenseSecondsLeft => (expansion != null && !DebugInput.Active)
+        ? expansion.SecondsAboveThreshold(expandThreshold) : float.PositiveInfinity;
+
+    // 還沒校準完就不出發;鍵盤測試模式不需要校準
+    bool CalibrationPending => expansion != null && expansion.isActiveAndEnabled
+        && !DebugInput.Active && !ExpansionCalibration.IsDone;
     public float DefenseProgress01 => bitesToGiveUp > 0 ? Mathf.Clamp01(blockedCount / (float)bitesToGiveUp) : 0f;
 
     // ---- 給 HeronNeckAim 看(唯讀,不影響原本行為) ----
@@ -155,6 +178,7 @@ public class HeronThreat : MonoBehaviour
     HeronNeckAim neckAim;       // 用來算嘴要碰到頭需要多少前傾(可以沒有)
     float windupStart;
     float staggerStart;
+    bool calibrationHeld;       // 曾因校準而暫停出發,校準完要重新計時
     bool expandLocked;          // 擋下後,等玩家先收手才恢復讀膨脹
     bool waitingAfterCatch;     // 被抓後原地待命,不自己計時出發
     float caughtStart;          // 被抓的時間(撲出去的動作從這裡開始)
@@ -171,6 +195,8 @@ public class HeronThreat : MonoBehaviour
         home = transform.position;
         homeRotation = transform.rotation;
         neckAim = GetComponent<HeronNeckAim>();
+        if (expansion != null) expansion.useDecay = enableExpansionDecay;
+        if (showDefenseNet && GetComponent<DefenseNet>() == null) gameObject.AddComponent<DefenseNet>();
         yaw = transform.eulerAngles.y - modelYawOffsetDeg;
 
         renderers = GetComponentsInChildren<Renderer>(true);
@@ -292,6 +318,14 @@ public class HeronThreat : MonoBehaviour
             transform.position = attackPos + Forward() * offset;
             ApplyRotation(tilt);
             return;
+        }
+
+        // 校準完成前不出發,校準完才開始計時
+        if (CalibrationPending) { calibrationHeld = true; return; }
+        if (calibrationHeld)
+        {
+            calibrationHeld = false;
+            if (useTimer) hiddenUntil = Time.time + Random.Range(hiddenSeconds.x, hiddenSeconds.y);
         }
 
         if (useTimer && Time.time >= hiddenUntil) BeginApproach();
@@ -435,7 +469,9 @@ public class HeronThreat : MonoBehaviour
         if (blocked)
         {
             blockedCount++;
-            expandLocked = true;
+            bool realDecay = expansion != null && expansion.useDecay && !DebugInput.Active;
+            expandLocked = !realDecay;
+            if (realDecay) expansion.ConsumeCharge(blockDeflateSeconds);
             CurrentBitePhase = BitePhase.Stagger;
             staggerStart = Time.time;
             phaseEnd = Time.time + staggerSeconds;
@@ -446,6 +482,7 @@ public class HeronThreat : MonoBehaviour
         {
             CaughtCount++;
             LogRoundEnd("被抓");
+            PlayCaughtFeedback();
             OnPlayerCaught?.Invoke();
 
             // 撲出去後停在原地待命,不自己再出發;等 ResetRound() 或 BeginApproach()
@@ -536,6 +573,14 @@ public class HeronThreat : MonoBehaviour
             hapticStopAt = Time.time + hapticSeconds;
         }
         PlayClip(blockedClip);
+    }
+
+    void PlayCaughtFeedback()
+    {
+        if (!hapticOnCaught) return;
+        OVRInput.SetControllerVibration(1f, caughtHapticAmplitude, OVRInput.Controller.LTouch);
+        OVRInput.SetControllerVibration(1f, caughtHapticAmplitude, OVRInput.Controller.RTouch);
+        hapticStopAt = Time.time + caughtHapticSeconds;
     }
 
     void PlayClip(AudioClip clip)
