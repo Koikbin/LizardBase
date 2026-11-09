@@ -149,6 +149,8 @@ public class BlowoutDepthProbe : MonoBehaviour
     float lastLineTime = float.NegativeInfinity;
     float lastEvaluateTime = float.NegativeInfinity;
     OVRCameraRig rig;
+    // 玩家縮放(head.lossyScale):距離門檻和手的半徑都是真實公尺,跟世界座標互換時要乘/除這個
+    float worldScale = 1f;
     // 要排除的點(手把中心、手部關節)和各自的半徑平方
     readonly System.Collections.Generic.List<Vector3> handPositions = new System.Collections.Generic.List<Vector3>(64);
     readonly System.Collections.Generic.List<float> handRadiiSqr = new System.Collections.Generic.List<float>(64);
@@ -169,6 +171,8 @@ public class BlowoutDepthProbe : MonoBehaviour
         EnsureBuffers();
 
         Vector3 origin = head.position;
+        // 玩家縮小時(OVRCameraRig 縮放 0.25),世界座標的距離 = 真實距離 x 縮放;這裡的距離設定都是真實公尺,要換算回去
+        worldScale = Mathf.Max(0.0001f, head.lossyScale.x);
         // 用 TransformPoint,讓嘴巴偏移和命中點一樣跟著 rig 縮放
         Vector3 mouth = head.TransformPoint(mouthOffset);
         MouthPoint = mouth;
@@ -184,11 +188,11 @@ public class BlowoutDepthProbe : MonoBehaviour
                 Vector3 dir = head.rotation * Quaternion.Euler(pitch, yaw, 0) * Vector3.forward;
                 var ray = new Ray(origin, dir);
 
-                bool didHit = raycastManager.Raycast(ray, out var hit, Mathf.Max(maxDist, measureDist));
+                bool didHit = raycastManager.Raycast(ray, out var hit, Mathf.Max(maxDist, measureDist) * worldScale);
                 int cell = i + j * columns;
                 CellStatuses[cell] = hit.status;
-                CellEyeDistances[cell] = didHit ? Vector3.Distance(origin, hit.point) : 0f;
-                CellMouthDistances[cell] = didHit ? Vector3.Distance(mouth, hit.point) : 0f;
+                CellEyeDistances[cell] = didHit ? Vector3.Distance(origin, hit.point) / worldScale : 0f;
+                CellMouthDistances[cell] = didHit ? Vector3.Distance(mouth, hit.point) / worldScale : 0f;
                 CellDistances[cell] = measureFromMouth ? CellMouthDistances[cell] : CellEyeDistances[cell];
                 cellPoints[cell] = hit.point;
                 CellNearHand[cell] = didHit && IsNearHand(hit.point);
@@ -269,7 +273,8 @@ public class BlowoutDepthProbe : MonoBehaviour
     void Add(Vector3 point, float radius)
     {
         handPositions.Add(point);
-        handRadiiSqr.Add(radius * radius);
+        float r = radius * worldScale;   // 半徑是真實公尺,換成世界座標
+        handRadiiSqr.Add(r * r);
     }
 
     bool IsNearHand(Vector3 point)
