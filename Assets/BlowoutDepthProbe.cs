@@ -54,6 +54,17 @@ public class BlowoutDepthProbe : MonoBehaviour
     [Tooltip("龍尾距離變短時,每秒最多退幾公尺。變長時立刻跟上。用來壓掉深度缺格造成的瞬間縮短。0 = 不平滑")]
     public float retractSpeed = 0.5f;
 
+    [Header("深度圖細長條偵測")]
+    [Tooltip("勾選 = 舌頭由 DepthStripDetector 控制:左眼深度圖上找到夠長的細長條才出現;射線的判定只記錄。不勾 = 照舊用射線")]
+    public bool useStripDetector = true;
+    public enum TongueLengthSource { Depth3D, ImageLength }
+    [Tooltip("ImageLength = 用細長條在圖上的長度換算;Depth3D = 把細長條反推回 3D,量龍尾離嘴巴多遠。2026-11-10 測試:吹龍的深度值常被填成最近距離,Depth3D 幾乎都是 9~10 公分,不能用。兩種都會寫進紀錄")]
+    public TongueLengthSource lengthSource = TongueLengthSource.ImageLength;
+    [Tooltip("ImageLength 模式:圖上長度(格)這麼短時舌頭 = 0")]
+    public float imageLengthRetracted = 55f;
+    [Tooltip("ImageLength 模式:圖上長度(格)這麼長時舌頭 = 1")]
+    public float imageLengthExtended = 85f;
+
     [Header("排除無效深度")]
     [Tooltip("還在深度相機範圍內的射線裡,有這個比例以上「一開始就被擋住」(ro),就當這一輪深度資料失效,整輪不算。2026-11-09 測試:全紫的圖都在 73% 以上,正常的圖最高 39%")]
     [Range(0f, 1f)] public float maxOccludedRatio = 0.5f;
@@ -143,6 +154,9 @@ public class BlowoutDepthProbe : MonoBehaviour
     public int NearBlockCount { get; private set; }
     // 這一輪估計的嘴巴位置(世界座標)
     public Vector3 MouthPoint { get; private set; }
+    // 玩家縮放(真實公尺換世界座標的倍數)
+    public float WorldScale => worldScale;
+    DepthStripDetector stripDetector;
     public EnvironmentRaycastHitStatus[] CellStatuses { get; private set; } = new EnvironmentRaycastHitStatus[0];
     // 這格的命中點離手把太近,被排除
     public bool[] CellNearHand { get; private set; } = new bool[0];
@@ -410,6 +424,12 @@ public class BlowoutDepthProbe : MonoBehaviour
     // 一句話說明這一輪的結果:通過的那塊,或沒有通過時最大那一塊被擋的原因
     public string DescribeResult()
     {
+        // 舌頭由深度圖細長條控制時,檔名和 HUD 顯示它的結果,不顯示射線的判斷
+        if (useStripDetector)
+        {
+            if (stripDetector == null) stripDetector = FindFirstObjectByType<DepthStripDetector>();
+            if (stripDetector != null) return stripDetector.Describe();
+        }
         if (DepthInvalid) return "深度失效(ro " + (OccludedRatio * 100f).ToString("F0") + "%)";
         if (AcceptedCluster >= 0) return DescribeCluster(AcceptedCluster);
         if (ClusterCount == 0) return "沒打到 " + (MinDist * 100f).ToString("F0") + "~" + (MaxDist * 100f).ToString("F0") + "cm 內的東西";
@@ -491,7 +511,25 @@ public class BlowoutDepthProbe : MonoBehaviour
         float dt = Mathf.Min(now - lastEvaluateTime, 0.1f);
         lastEvaluateTime = now;
 
-        if (bestCell >= 0)
+        // 偵測到的龍尾:射線(舊做法)或深度圖細長條(新做法)
+        bool hasTip = bestCell >= 0;
+        Vector3 tipPoint = hasTip ? cellPoints[bestCell] : TipPoint;
+        if (useStripDetector)
+        {
+            if (stripDetector == null) stripDetector = FindFirstObjectByType<DepthStripDetector>();
+            hasTip = stripDetector != null && stripDetector.HornFound;
+            if (hasTip)
+            {
+                bool use3D = lengthSource == TongueLengthSource.Depth3D && stripDetector.TipMouthDistance > 0f;
+                bestDistance = use3D
+                    ? stripDetector.TipMouthDistance
+                    : Mathf.Lerp(Retracted, Extended, Mathf.InverseLerp(imageLengthRetracted, imageLengthExtended, stripDetector.ImageLength));
+                // 紅點畫在偵測到的長條末端(不是射線的最遠點)
+                if (stripDetector.HasTipPoint) tipPoint = stripDetector.TipWorldPoint;
+            }
+        }
+
+        if (hasTip)
         {
             lastLineTime = now;
             // 變長立刻跟上;變短慢慢退,避免龍尾那格偶爾缺格時舌頭一縮一伸
@@ -499,7 +537,7 @@ public class BlowoutDepthProbe : MonoBehaviour
                 TipDistance = bestDistance;
             else
                 TipDistance = Mathf.MoveTowards(TipDistance, bestDistance, retractSpeed * dt);
-            TipPoint = cellPoints[bestCell];
+            TipPoint = tipPoint;
             Length01 = Mathf.InverseLerp(Retracted, Extended, TipDistance);
         }
         else if (now - lastLineTime > lineHoldTime)

@@ -79,7 +79,7 @@ public class DepthSnapshot : MonoBehaviour
         if (depthShader != null)
         {
             depthMaterial = new Material(depthShader);
-            gameObject.AddComponent<DepthStripDetector>().Init(depthShader, depthManager, probe != null ? probe.head : null);
+            gameObject.AddComponent<DepthStripDetector>().Init(depthShader, depthManager, probe);
         }
 
 #if UNITY_ANDROID && !UNITY_EDITOR

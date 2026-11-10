@@ -1,0 +1,5 @@
+108c108,109
+<             + $" horn={(stripDetector.HornFound ? 1 : 0)} tip3d={stripDetector.TipMouthDistance * 100f:F1}cm imglen={stripDetector.ImageLength:F1}";
+---
+>             + $" horn={(stripDetector.HornFound ? 1 : 0)} rhorn={(stripDetector.RightHornFound ? 1 : 0)} rimglen={stripDetector.RightImageLength:F1}"
+>             + $" tip3d={stripDetector.TipMouthDistance * 100f:F1}cm imglen={stripDetector.ImageLength:F1}";

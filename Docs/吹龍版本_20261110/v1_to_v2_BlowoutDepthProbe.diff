@@ -1,0 +1,12 @@
+426a427,432
+>         // 舌頭由深度圖細長條控制時,檔名和 HUD 顯示它的結果,不顯示射線的判斷
+>         if (useStripDetector)
+>         {
+>             if (stripDetector == null) stripDetector = FindFirstObjectByType<DepthStripDetector>();
+>             if (stripDetector != null) return stripDetector.Describe();
+>         }
+521c527,528
+<                 if (use3D) tipPoint = stripDetector.TipWorldPoint;
+---
+>                 // 紅點畫在偵測到的長條末端(不是射線的最遠點)
+>                 if (stripDetector.HasTipPoint) tipPoint = stripDetector.TipWorldPoint;

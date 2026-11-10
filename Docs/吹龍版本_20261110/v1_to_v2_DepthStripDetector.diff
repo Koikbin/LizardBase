@@ -1,0 +1,86 @@
+6c6
+< // 左右眼任一眼找到夠長的細長條,就控制舌頭(BlowoutDepthProbe 勾選 Use Strip Detector 時)。由 DepthSnapshot 在執行時加上。
+---
+> // 左眼找到夠長的細長條,就控制舌頭(BlowoutDepthProbe 勾選 Use Strip Detector 時);右眼也偵測,但只寫進紀錄。由 DepthSnapshot 在執行時加上。
+20c20
+<     const int MaxWidth = 60;
+---
+>     const float MaxThickness = 22f;  // PCA 量的寬度(垂直長軸方向),斜的長條也量得準;翹起的捲筒通常比較粗
+48c48
+<     // 控制舌頭用:有沒有偵測到伸出來的吹龍(任一眼)、色塊在圖上的長度(格,兩眼取長的)。
+---
+>     // 控制舌頭用:左眼有沒有偵測到伸出來的吹龍、色塊在圖上的長度(格)。右眼的結果另外記錄。
+53a54,57
+>     public bool RightHornFound => rightHorn;
+>     public float RightImageLength => rightLength;
+>     // TipWorldPoint 有沒有算出來(偵錯照片上的紅點用)
+>     public bool HasTipPoint { get; private set; }
+257c261
+<             if (touchesTop || area < MinArea || area > MaxArea || width > MaxWidth) continue;
+---
+>             if (touchesTop || area < MinArea || area > MaxArea) continue;
+258a263,265
+>             var shape = new Strip();
+>             MeasureShape(area, sumX, sumY, sumXX, sumYY, sumXY, ref shape);
+>             if (shape.thickness > MaxThickness) continue;
+278c285,287
+<                 MeasureShape(area, sumX, sumY, sumXX, sumYY, sumXY, ref best);
+---
+>                 best.length = shape.length;
+>                 best.thickness = shape.thickness;
+>                 best.angle = shape.angle;
+305a315
+>         HasTipPoint = false;
+312c322
+<     // 任一眼偵測到就算;長度取偵測到的那幾眼裡比較長的
+---
+>     // 只用左眼控制舌頭;右眼保留在 RightHornFound 給紀錄用
+315,316c325,335
+<         HornFound = leftHorn || rightHorn;
+<         ImageLength = Mathf.Max(leftHorn ? leftLength : 0f, rightHorn ? rightLength : 0f);
+---
+>         HornFound = leftHorn;
+>         ImageLength = leftHorn ? leftLength : 0f;
+>     }
+> 
+>     // 給偵錯照片檔名和 HUD 用的一句話
+>     public string Describe()
+>     {
+>         if (LookingDown) return "低頭不判斷";
+>         if (HornFound) return $"吹龍(長度{Left.length:F0})";
+>         if (Left.found) return $"長條太短(長度{Left.length:F0}-要{MinTongueLength:F0})";
+>         return "沒有吹龍形狀";
+322a342
+>         HasTipPoint = false;
+353c373,401
+<         TipWorldPoint = tipPoint;
+---
+>         TipWorldPoint = FindStripEnd(strip, out bool foundEnd);
+>         HasTipPoint = foundEnd;
+>     }
+> 
+>     // 長條的末端:沿長軸方向兩端各找一格,離畫面邊緣比較遠的那一端就是龍尾(另一端是從邊緣伸進來的根部)
+>     Vector3 FindStripEnd(Strip strip, out bool found)
+>     {
+>         float radians = strip.angle * Mathf.Deg2Rad;
+>         float dirX = Mathf.Cos(radians), dirY = Mathf.Sin(radians);
+>         int minCell = -1, maxCell = -1;
+>         float minProj = float.MaxValue, maxProj = float.MinValue;
+>         for (int cell = 0; cell < CellCount; cell++)
+>         {
+>             if (!InBestStrip(cell)) continue;
+>             float proj = (cell % GridSize) * dirX + (cell / GridSize) * dirY;
+>             if (proj < minProj) { minProj = proj; minCell = cell; }
+>             if (proj > maxProj) { maxProj = proj; maxCell = cell; }
+>         }
+>         found = minCell >= 0;
+>         if (!found) return Vector3.zero;
+>         int tipCell = EdgeDistance(minCell) > EdgeDistance(maxCell) ? minCell : maxCell;
+>         return CellToWorld(tipCell, gridMeters[tipCell]);
+>     }
+> 
+>     // 離畫面左、右、下緣最近的距離(格)。根部從這三邊伸進來
+>     static int EdgeDistance(int cell)
+>     {
+>         int x = cell % GridSize, y = cell / GridSize;
+>         return Mathf.Min(Mathf.Min(x, GridSize - 1 - x), y);

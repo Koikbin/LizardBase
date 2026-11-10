@@ -104,13 +104,16 @@ public class TongueDepthDebug : MonoBehaviour
         if (stripDetector == null) return "strip=0 rstrip=0 down=0";
         // strip = 左眼深度、rstrip = 右眼深度;down=1 表示低頭,這一輪沒有偵測
         return StripText("strip", "s", stripDetector.Left) + " " + StripText("rstrip", "r", stripDetector.Right)
-            + (stripDetector.LookingDown ? " down=1" : " down=0");
+            + (stripDetector.LookingDown ? " down=1" : " down=0")
+            + $" horn={(stripDetector.HornFound ? 1 : 0)} rhorn={(stripDetector.RightHornFound ? 1 : 0)} rimglen={stripDetector.RightImageLength:F1}"
+            + $" tip3d={stripDetector.TipMouthDistance * 100f:F1}cm imglen={stripDetector.ImageLength:F1}";
     }
 
     private static string StripText(string name, string prefix, DepthStripDetector.Strip strip)
     {
         if (!strip.found) return name + "=0";
-        return $"{name}=1 {prefix}a={strip.area} {prefix}w={strip.width} {prefix}h={strip.height} {prefix}x={strip.x} {prefix}y={strip.y}";
+        return $"{name}=1 {prefix}a={strip.area} {prefix}w={strip.width} {prefix}h={strip.height} {prefix}x={strip.x} {prefix}y={strip.y}"
+            + $" {prefix}len={strip.length:F1} {prefix}thk={strip.thickness:F1} {prefix}ang={strip.angle:F0}";
     }
 
     // 深度相機的最近距離(公尺):原始深度值 0 換算出來就是這個數字

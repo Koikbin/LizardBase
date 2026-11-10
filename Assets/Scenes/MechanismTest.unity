@@ -2380,6 +2380,7 @@ MonoBehaviour:
   tongue: {fileID: 319230467}
   depthDebug: {fileID: 1908201690}
   minInterval: 0.5
+  photoMaxDistance: 0.3
   dotRadius: 7
   imageIsTopDown: 0
   saveDepth: 1
@@ -4771,6 +4772,16 @@ MonoBehaviour:
   rootMaxDist: 0.225
   lineHoldTime: 0.4
   retractSpeed: 0.5
+  useStripDetector: 1
+  lengthSource: 1
+  imageLengthRetracted: 55
+  imageLengthExtended: 85
+  maxOccludedRatio: 0.5
+  maxNearBlockCells: 8
+  nearBlockForward: 0.125
+  centerRootFromRow: 6
+  centerRootMaxOffset: 2
+  risingTolerance: 0.01
   ignoreNearHands: 1
   handIgnoreRadius: 0.22
   useHandJoints: 1
@@ -13138,6 +13149,7 @@ MonoBehaviour:
   logInterval: 0.5
   triggerAbove: 0.5
   gridLogInterval: 0.2
+  saveContinuous: 1
 --- !u!1 &1912863703
 GameObject:
   m_ObjectHideFlags: 0
