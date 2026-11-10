@@ -54,6 +54,22 @@ public class BlowoutDepthProbe : MonoBehaviour
     [Tooltip("龍尾距離變短時,每秒最多退幾公尺。變長時立刻跟上。用來壓掉深度缺格造成的瞬間縮短。0 = 不平滑")]
     public float retractSpeed = 0.5f;
 
+    [Header("排除無效深度")]
+    [Tooltip("還在深度相機範圍內的射線裡,有這個比例以上「一開始就被擋住」(ro),就當這一輪深度資料失效,整輪不算。2026-11-09 測試:全紫的圖都在 73% 以上,正常的圖最高 39%")]
+    [Range(0f, 1f)] public float maxOccludedRatio = 0.5f;
+    [Tooltip("整個畫面裡,眼睛正前方不到 Near Block Forward 的命中點達到這個數量,就當作深度資料不可靠,這一輪不算吹龍。0 = 不檢查")]
+    public int maxNearBlockCells = 8;
+    [Tooltip("上面那條規則用的距離(公尺,眼睛正前方)")]
+    public float nearBlockForward = 0.125f;
+
+    [Header("吹龍形狀")]
+    [Tooltip("線必須碰到這一排或更下面的位置(0 = 最上排),而且靠近中央")]
+    public int centerRootFromRow = 6;
+    [Tooltip("線最下面那排所有點的平均位置,離中間那一欄最多幾欄")]
+    public int centerRootMaxOffset = 2;
+    [Tooltip("由下往上,每排的平均距離可以比下面一排少多少(公尺)還算越來越遠")]
+    public float risingTolerance = 0.01f;
+
     [Header("排除手把")]
     [Tooltip("打到的點離左右手把(或手)太近就不算,用來擋掉手把伸到臉前造成的誤判")]
     public bool ignoreNearHands = true;
@@ -112,6 +128,19 @@ public class BlowoutDepthProbe : MonoBehaviour
     // 偵錯用:每格命中點到眼睛、到嘴巴的距離(沒打到 = 0)。CellDistances 等於其中一個,看 measureFromMouth
     public float[] CellEyeDistances { get; private set; } = new float[0];
     public float[] CellMouthDistances { get; private set; } = new float[0];
+    // 偵錯用:每格命中點在眼睛正前方幾公尺(頭的座標 z,沒打到 = 0)
+    public float[] CellForwardDistances { get; private set; } = new float[0];
+    // 偵錯用:Meta 判定「不可靠」(oc)的命中點,離嘴巴和眼睛正前方的距離(不是 oc = 0)。只記錄,不參與判定
+    public float[] CellOcMouthDistances { get; private set; } = new float[0];
+    public float[] CellOcForwardDistances { get; private set; } = new float[0];
+    public Vector3 CellPoint(int cell) => cellPoints[cell];
+    // 這一輪還在深度相機範圍內的射線裡,一開始就被擋住(ro)的比例;超出範圍(fr)的比例
+    public float OccludedRatio { get; private set; }
+    public float OutOfFrustumRatio { get; private set; }
+    // 這一輪深度資料失效,整輪不算
+    public bool DepthInvalid { get; private set; }
+    // 這一輪眼前很近的命中點數量(偵錯用,也用來判斷畫面是否不可靠)
+    public int NearBlockCount { get; private set; }
     // 這一輪估計的嘴巴位置(世界座標)
     public Vector3 MouthPoint { get; private set; }
     public EnvironmentRaycastHitStatus[] CellStatuses { get; private set; } = new EnvironmentRaycastHitStatus[0];
@@ -120,7 +149,7 @@ public class BlowoutDepthProbe : MonoBehaviour
     public int HandIgnoredCount { get; private set; }
 
     // 偵錯用:近距離的格子連成的每一塊,以及每一塊有沒有通過細線判定、沒過的原因
-    public enum Verdict { Pass, TooFew, TooMany, TooHigh, NoRoot, OffCenter, RootTooFar, TooWide }
+    public enum Verdict { Pass, TooFew, TooMany, TooHigh, NoRoot, OffCenter, RootTooFar, TooWide, NearBlock, NoCenterRoot, TipNotOnTop, NotRising }
 
     public struct Cluster
     {
@@ -145,6 +174,9 @@ public class BlowoutDepthProbe : MonoBehaviour
     bool[] visited = new bool[0];
     int[] pending = new int[0];
     int[] rowWidths = new int[0];
+    float[] rowSums = new float[0];
+    float[] rowMaxes = new float[0];
+    float[] rowColumnSums = new float[0];
     int frame;
     float lastLineTime = float.NegativeInfinity;
     float lastEvaluateTime = float.NegativeInfinity;
@@ -178,6 +210,8 @@ public class BlowoutDepthProbe : MonoBehaviour
         MouthPoint = mouth;
         UpdateHandPositions();
         int handIgnored = 0;
+        int occluded = 0;
+        int outOfFrustum = 0;
 
         for (int i = 0; i < columns; i++)
         {
@@ -194,13 +228,33 @@ public class BlowoutDepthProbe : MonoBehaviour
                 CellEyeDistances[cell] = didHit ? Vector3.Distance(origin, hit.point) / worldScale : 0f;
                 CellMouthDistances[cell] = didHit ? Vector3.Distance(mouth, hit.point) / worldScale : 0f;
                 CellDistances[cell] = measureFromMouth ? CellMouthDistances[cell] : CellEyeDistances[cell];
+                // InverseTransformPoint 已經把玩家縮放換算掉,結果是真實公尺
+                CellForwardDistances[cell] = didHit ? head.InverseTransformPoint(hit.point).z : 0f;
+                bool occludedHit = hit.status == EnvironmentRaycastHitStatus.HitPointOccluded;
+                CellOcMouthDistances[cell] = occludedHit ? Vector3.Distance(mouth, hit.point) / worldScale : 0f;
+                CellOcForwardDistances[cell] = occludedHit ? head.InverseTransformPoint(hit.point).z : 0f;
                 cellPoints[cell] = hit.point;
                 CellNearHand[cell] = didHit && IsNearHand(hit.point);
                 if (CellNearHand[cell]) handIgnored++;
+                if (hit.status == EnvironmentRaycastHitStatus.RayOccluded) occluded++;
+                else if (hit.status == EnvironmentRaycastHitStatus.HitPointOutsideOfCameraFrustum) outOfFrustum++;
             }
         }
 
         HandIgnoredCount = handIgnored;
+        int inFrustum = RayCount - outOfFrustum;
+        OccludedRatio = inFrustum > 0 ? occluded / (float)inFrustum : 0f;
+        OutOfFrustumRatio = RayCount > 0 ? outOfFrustum / (float)RayCount : 0f;
+        DepthInvalid = OccludedRatio >= maxOccludedRatio;
+
+        int nearBlock = 0;
+        for (int cell = 0; cell < RayCount; cell++)
+        {
+            if (CellStatuses[cell] == EnvironmentRaycastHitStatus.Hit && CellForwardDistances[cell] < nearBlockForward)
+                nearBlock++;
+        }
+        NearBlockCount = nearBlock;
+
         EvaluateLine(Time.time);
     }
 
@@ -294,11 +348,17 @@ public class BlowoutDepthProbe : MonoBehaviour
         CellDistances = new float[RayCount];
         CellEyeDistances = new float[RayCount];
         CellMouthDistances = new float[RayCount];
+        CellForwardDistances = new float[RayCount];
+        CellOcMouthDistances = new float[RayCount];
+        CellOcForwardDistances = new float[RayCount];
         CellStatuses = new EnvironmentRaycastHitStatus[RayCount];
         cellPoints = new Vector3[RayCount];
         visited = new bool[RayCount];
         pending = new int[RayCount];
         rowWidths = new int[rows];
+        rowSums = new float[rows];
+        rowMaxes = new float[rows];
+        rowColumnSums = new float[rows];
         CellClusters = new int[RayCount];
         CellNearHand = new bool[RayCount];
         Clusters = new Cluster[RayCount];
@@ -316,6 +376,10 @@ public class BlowoutDepthProbe : MonoBehaviour
             case Verdict.OffCenter: return "偏太多";
             case Verdict.RootTooFar: return "根部太遠";
             case Verdict.TooWide: return "太寬";
+            case Verdict.NearBlock: return "畫面近點太多";
+            case Verdict.NoCenterRoot: return "沒從下方中間長出";
+            case Verdict.TipNotOnTop: return "最遠點不在最上排";
+            case Verdict.NotRising: return "沒有越往上越遠";
             default: return "?";
         }
     }
@@ -334,6 +398,10 @@ public class BlowoutDepthProbe : MonoBehaviour
             case Verdict.OffCenter: detail = $"嘴巴區偏{c.rootColumnOffset}欄 > {rootMaxColumnOffset}"; break;
             case Verdict.RootTooFar: detail = $"最近{c.nearest * 100f:F0}cm > {RootMaxDist * 100f:F1}"; break;
             case Verdict.TooWide: detail = $"某排{c.widestRow}格 > {maxRowWidth}"; break;
+            case Verdict.NearBlock: detail = $"{NearBlockCount}點 >= {maxNearBlockCells}"; break;
+            case Verdict.NoCenterRoot: detail = $"最低第{c.lowestRow}排"; break;
+            case Verdict.TipNotOnTop: detail = $"{c.size}格 龍尾{c.far * 100f:F0}cm"; break;
+            case Verdict.NotRising: detail = $"{c.size}格 龍尾{c.far * 100f:F0}cm"; break;
             default: detail = $"{c.size}格 龍尾{c.far * 100f:F0}cm"; break;
         }
         return $"{(char)('A' + index)} {VerdictText(c.verdict)}({detail})";
@@ -342,6 +410,7 @@ public class BlowoutDepthProbe : MonoBehaviour
     // 一句話說明這一輪的結果:通過的那塊,或沒有通過時最大那一塊被擋的原因
     public string DescribeResult()
     {
+        if (DepthInvalid) return "深度失效(ro " + (OccludedRatio * 100f).ToString("F0") + "%)";
         if (AcceptedCluster >= 0) return DescribeCluster(AcceptedCluster);
         if (ClusterCount == 0) return "沒打到 " + (MinDist * 100f).ToString("F0") + "~" + (MaxDist * 100f).ToString("F0") + "cm 內的東西";
 
@@ -351,9 +420,25 @@ public class BlowoutDepthProbe : MonoBehaviour
         return DescribeCluster(biggest);
     }
 
+    // 偵錯拍照用:這一輪有沒有射線打到 maxDistance(公尺)以內的東西。其他條件和 hits 相同,只是上限可以不同
+    public bool HasHitWithin(float maxDistance)
+    {
+        if (DepthInvalid) return false;
+        for (int cell = 0; cell < CellDistances.Length; cell++)
+        {
+            if (CellStatuses[cell] == EnvironmentRaycastHitStatus.Hit
+                && !CellNearHand[cell]
+                && CellDistances[cell] >= MinDist
+                && CellDistances[cell] <= maxDistance)
+                return true;
+        }
+        return false;
+    }
+
     bool IsNear(int cell)
     {
-        return CellStatuses[cell] == EnvironmentRaycastHitStatus.Hit
+        return !DepthInvalid
+            && CellStatuses[cell] == EnvironmentRaycastHitStatus.Hit
             && !CellNearHand[cell]
             && CellDistances[cell] >= MinDist
             && CellDistances[cell] <= MaxDist;
@@ -424,10 +509,29 @@ public class BlowoutDepthProbe : MonoBehaviour
         }
     }
 
+    // 這一塊由下往上,每排的平均距離是否越來越遠(至少要有兩排)
+    bool IsRisingUpward()
+    {
+        int rowsUsed = 0;
+        float previous = 0f;
+        for (int row = rows - 1; row >= 0; row--)
+        {
+            if (rowWidths[row] == 0) continue;
+            float average = rowSums[row] / rowWidths[row];
+            if (rowsUsed > 0 && average < previous - risingTolerance) return false;
+            previous = average;
+            rowsUsed++;
+        }
+        return rowsUsed >= 2;
+    }
+
     // 從 start 把相鄰且距離接近的格子連起來,標成第 id 塊,回傳這一塊的形狀與是否符合細線的條件。
     Cluster MeasureConnectedCells(int start, int id, out int farCell)
     {
         System.Array.Clear(rowWidths, 0, rows);
+        System.Array.Clear(rowSums, 0, rows);
+        System.Array.Clear(rowMaxes, 0, rows);
+        System.Array.Clear(rowColumnSums, 0, rows);
         int size = 0;
         farCell = start;
 
@@ -449,6 +553,9 @@ public class BlowoutDepthProbe : MonoBehaviour
 
             size++;
             rowWidths[row]++;
+            rowSums[row] += CellDistances[cell];
+            if (CellDistances[cell] > rowMaxes[row]) rowMaxes[row] = CellDistances[cell];
+            rowColumnSums[row] += column;
             CellClusters[cell] = id;
             if (CellDistances[cell] > CellDistances[farCell]) farCell = cell;
             if (CellDistances[cell] < nearestDistance) nearestDistance = CellDistances[cell];
@@ -480,6 +587,10 @@ public class BlowoutDepthProbe : MonoBehaviour
             if (rowWidths[row] > widestRow) widestRow = rowWidths[row];
         }
 
+        // 根部:線最下面那排的平均位置要夠低、夠靠中央
+        bool rootInCenter = lowestRow >= centerRootFromRow
+            && Mathf.Abs(rowColumnSums[lowestRow] / rowWidths[lowestRow] - centerColumn) <= centerRootMaxOffset;
+
         var cluster = new Cluster
         {
             size = size,
@@ -498,6 +609,10 @@ public class BlowoutDepthProbe : MonoBehaviour
         else if (maxRootColumnOffset > rootMaxColumnOffset) cluster.verdict = Verdict.OffCenter;
         else if (nearestDistance > RootMaxDist) cluster.verdict = Verdict.RootTooFar;
         else if (widestRow > maxRowWidth) cluster.verdict = Verdict.TooWide;
+        else if (maxNearBlockCells > 0 && NearBlockCount >= maxNearBlockCells) cluster.verdict = Verdict.NearBlock;
+        else if (!rootInCenter) cluster.verdict = Verdict.NoCenterRoot;
+        else if (rowMaxes[highestRow] < cluster.far - 0.005f) cluster.verdict = Verdict.TipNotOnTop;
+        else if (!IsRisingUpward()) cluster.verdict = Verdict.NotRising;
         else cluster.verdict = Verdict.Pass;
 
         return cluster;

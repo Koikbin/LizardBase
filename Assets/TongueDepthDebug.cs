@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Text;
 using Meta.XR;
 using TMPro;
@@ -32,7 +34,14 @@ public class TongueDepthDebug : MonoBehaviour
     public float triggerAbove = 0.5f;
     public float gridLogInterval = 0.2f;
 
+    [Header("連續紀錄")]
+    [Tooltip("每隔 Grid Log Interval 寫一行摘要到 DepthShots/continuous_時間.txt;按住標記鍵時再多寫完整格子圖")]
+    public bool saveContinuous = true;
+
     private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+    private static readonly int DepthZBufferParamsId = Shader.PropertyToID("_EnvironmentDepthZBufferParams");
+    private StreamWriter continuousLog;
+    private DepthStripDetector stripDetector;
 
     private TextMeshPro hud;
     private Renderer[] hitDots = new Renderer[0];
@@ -55,9 +64,60 @@ public class TongueDepthDebug : MonoBehaviour
         hud.textWrappingMode = TextWrappingModes.NoWrap;
         hud.rectTransform.sizeDelta = new Vector2(0.4f, 0.2f);
 
+        // 文字永遠畫在最前面,不會被地面或其他物體擋住。
+        // TextMeshPro 的 isOverlay 在目前的版本沒有作用,所以直接改材質。
+        Material hudMaterial = hud.fontMaterial;
+        hudMaterial.SetFloat(ShaderUtilities.ShaderTag_ZTestMode, (float)UnityEngine.Rendering.CompareFunction.Always);
+        hudMaterial.renderQueue = 4000;
+
         tipMarker.transform.localScale = Vector3.one * tipDotSize;
         SetColor(tipMarker, tipColor);
         tipMarker.gameObject.SetActive(false);
+
+        OpenContinuousLog();
+    }
+
+    private void OpenContinuousLog()
+    {
+        if (!saveContinuous) return;
+#if UNITY_EDITOR
+        string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "DepthShots"));
+#else
+        string folder = Path.Combine(Application.persistentDataPath, "DepthShots");
+#endif
+        Directory.CreateDirectory(folder);
+        string path = Path.Combine(folder, "continuous_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".txt");
+        continuousLog = new StreamWriter(path, false, new UTF8Encoding(false)) { AutoFlush = true };
+        Debug.Log("[TongueDebug] 連續紀錄存到 " + path);
+    }
+
+    private void OnDestroy()
+    {
+        if (continuousLog != null) continuousLog.Dispose();
+        continuousLog = null;
+    }
+
+    // 深度圖細長條偵測的結果,寫進連續紀錄。只記錄,不影響舌頭
+    private string StripSummary()
+    {
+        if (stripDetector == null) stripDetector = FindFirstObjectByType<DepthStripDetector>();
+        if (stripDetector == null) return "strip=0 rstrip=0 down=0";
+        // strip = 左眼深度、rstrip = 右眼深度;down=1 表示低頭,這一輪沒有偵測
+        return StripText("strip", "s", stripDetector.Left) + " " + StripText("rstrip", "r", stripDetector.Right)
+            + (stripDetector.LookingDown ? " down=1" : " down=0");
+    }
+
+    private static string StripText(string name, string prefix, DepthStripDetector.Strip strip)
+    {
+        if (!strip.found) return name + "=0";
+        return $"{name}=1 {prefix}a={strip.area} {prefix}w={strip.width} {prefix}h={strip.height} {prefix}x={strip.x} {prefix}y={strip.y}";
+    }
+
+    // 深度相機的最近距離(公尺):原始深度值 0 換算出來就是這個數字
+    private static float DepthNearPlane()
+    {
+        Vector4 p = Shader.GetGlobalVector(DepthZBufferParamsId);
+        return Mathf.Approximately(p.y, 1f) ? 0f : p.x / (p.y - 1f);
     }
 
     private void LateUpdate()
@@ -76,10 +136,11 @@ public class TongueDepthDebug : MonoBehaviour
         hud.text = (mark != null ? "== " + mark + " ==\n" : "")
                  + $"Ray {RaycastModeHud}  from {(probe.measureFromMouth ? "mouth" : "eye")}\n"
                  + $"Hits  {probe.NearHitCount} / {probe.RayCount}  Line {probe.LineCellCount}\n"
+                 + $"RO {probe.OccludedRatio * 100f:F0}%{(probe.DepthInvalid ? "  DEPTH INVALID" : "")}\n"
                  + $"{probe.DescribeResult()}\n"
                  + $"Far   {farText}\n"
                  + $"Raw   {rawText}\n"
-                 + $"Input {tongue.RawInput:F2}\n"
+                 + $"Input {tongue.RawInput:F2}   HeadY {head.localPosition.y:F2} m\n"
                  + $"Tongue {length:F2} / {maxLength:F2} m";
 
         bool crossedUp = previousRawInput < triggerAbove && tongue.RawInput >= triggerAbove;
@@ -115,7 +176,16 @@ public class TongueDepthDebug : MonoBehaviour
     {
         if (Time.unscaledTime < nextGridLogTime || probe.CellDistances.Length == 0) return;
         nextGridLogTime = Time.unscaledTime + gridLogInterval;
-        Debug.Log(GridReport(mark));
+        string report = GridReport(mark);
+        Debug.Log(report);
+
+        if (continuousLog == null) return;
+        continuousLog.WriteLine(
+            $"t={Time.unscaledTime:F2} mark={mark ?? "none"} ro={probe.OccludedRatio * 100f:F0}% fr={probe.OutOfFrustumRatio * 100f:F0}%"
+            + $" invalid={(probe.DepthInvalid ? 1 : 0)} near={DepthNearPlane() * 100f:F1}cm nearblock={probe.NearBlockCount} hits={probe.NearHitCount}"
+            + $" tip={probe.TipDistance * 100f:F1}cm input={tongue.RawInput:F2}"
+            + $" pitch={Mathf.Asin(Mathf.Clamp(-head.forward.y, -1f, 1f)) * Mathf.Rad2Deg:F1} worn={(OVRPlugin.userPresent ? 1 : 0)} {StripSummary()}");
+        if (mark != null) continuousLog.Write(report);
     }
 
     // 目前這一輪的格子圖文字(和 Console 的 [DepthGrid] 同一個格式)
@@ -136,6 +206,8 @@ public class TongueDepthDebug : MonoBehaviour
                 .Append("  龍尾到嘴=").Append(probe.TipDistance > 0f ? (Vector3.Distance(probe.MouthPoint, probe.TipPoint) * 100f).ToString("F1") + "cm" : "--")
                 .Append("\n射線:").Append(RaycastMode)
                 .Append("  距離從:").Append(probe.measureFromMouth ? "嘴巴" : "眼睛")
+                .Append("  ro=").Append((probe.OccludedRatio * 100f).ToString("F0")).Append('%')
+                .Append("  最近距離=").Append((DepthNearPlane() * 100f).ToString("F1")).Append("cm")
                 .Append("\n結果: ").Append(probe.DescribeResult())
                 .Append('\n');
 
@@ -178,7 +250,46 @@ public class TongueDepthDebug : MonoBehaviour
             gridText.Append('\n');
         }
 
+        AppendHitGrid("從眼睛量(cm):", probe.CellEyeDistances);
+        AppendHitGrid("眼睛正前方(cm):", probe.CellForwardDistances);
+        AppendOcGrid("oc離嘴巴(cm):", probe.CellOcMouthDistances);
+        AppendOcGrid("oc眼睛正前方(cm):", probe.CellOcForwardDistances);
+
         return gridText.ToString();
+    }
+
+    // 只列出 oc(Meta 判定不可靠)的格子(公分),其他 = .
+    private void AppendOcGrid(string title, float[] values)
+    {
+        gridText.Append(title).Append('\n');
+        for (int row = 0; row < probe.rows; row++)
+        {
+            Pad(row + "排", 8);
+            for (int column = 0; column < probe.columns; column++)
+            {
+                int cell = column + row * probe.columns;
+                bool oc = probe.CellStatuses[cell] == EnvironmentRaycastHitStatus.HitPointOccluded;
+                Pad(oc ? Mathf.RoundToInt(values[cell] * 100f).ToString() : ".", 6);
+            }
+            gridText.Append('\n');
+        }
+    }
+
+    // 只列出有打到的格子(公分),沒打到 = .
+    private void AppendHitGrid(string title, float[] values)
+    {
+        gridText.Append(title).Append('\n');
+        for (int row = 0; row < probe.rows; row++)
+        {
+            Pad(row + "排", 8);
+            for (int column = 0; column < probe.columns; column++)
+            {
+                int cell = column + row * probe.columns;
+                bool hit = probe.CellStatuses[cell] == EnvironmentRaycastHitStatus.Hit;
+                Pad(hit ? Mathf.RoundToInt(values[cell] * 100f).ToString() : ".", 6);
+            }
+            gridText.Append('\n');
+        }
     }
 
     // 編譯開關決定 EnvironmentRaycastManager 用哪一種射線

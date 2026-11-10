@@ -9,7 +9,7 @@ using UnityEngine.Rendering;
 using UnityEngine.Android;
 #endif
 
-// 偵測到吹龍、舌頭出現的那一刻(舌頭輸入從 0 變成大於 0),存下當下的畫面:
+// 只要有射線打到 Photo Max Distance 以內的東西,不論有沒有按標記鍵,每隔 Min Interval 存下當下的畫面:
 //   xxx.png        頭顯彩色鏡頭的照片,畫上藍點(青色)和龍尾點(紅色)
 //   xxx_depth.png  深度感測的距離圖,也就是偵測真正看到的東西:
 //                  紫色 = 比有效距離還近、橘黃 = 有效距離內(越近越黃)、灰 = 比有效距離遠(越遠越暗)、黑 = 沒有資料
@@ -28,6 +28,8 @@ public class DepthSnapshot : MonoBehaviour
 
     [Tooltip("兩次存檔至少相隔幾秒,避免連續觸發時存一堆幾乎一樣的圖")]
     public float minInterval = 0.5f;
+    [Tooltip("只有打到這個距離(公尺)以內的東西才拍照。距離的量法和吹龍判定相同(目前從嘴巴量)")]
+    public float photoMaxDistance = 0.30f;
     [Tooltip("彩色照片上藍點畫多大(像素)")]
     public int dotRadius = 7;
     [Tooltip("彩色照片上的點和實際物體上下顛倒時勾選,照片本身也會一起翻正")]
@@ -52,12 +54,12 @@ public class DepthSnapshot : MonoBehaviour
 
     static readonly Color32 DotColor = new Color32(0, 230, 255, 255);
     static readonly Color32 TipColor = new Color32(255, 40, 40, 255);
+    static readonly Color32 OccludedColor = new Color32(60, 235, 60, 255);
     static readonly Color32 RingColor = new Color32(0, 0, 0, 255);
     static readonly Color32 RayColor = new Color32(255, 255, 255, 255);
     static readonly Color32 HandRayColor = new Color32(120, 120, 120, 255);
 
     string folder;
-    float previousInput;
     float nextAllowedTime;
     int savedCount;
     bool warnedNoCamera;
@@ -74,7 +76,11 @@ public class DepthSnapshot : MonoBehaviour
         Directory.CreateDirectory(folder);
         Debug.Log("[DepthShot] 照片會存到 " + folder);
 
-        if (depthShader != null) depthMaterial = new Material(depthShader);
+        if (depthShader != null)
+        {
+            depthMaterial = new Material(depthShader);
+            gameObject.AddComponent<DepthStripDetector>().Init(depthShader, depthManager, probe != null ? probe.head : null);
+        }
 
 #if UNITY_ANDROID && !UNITY_EDITOR
         if (!Permission.HasUserAuthorizedPermission(CameraPermission))
@@ -89,14 +95,10 @@ public class DepthSnapshot : MonoBehaviour
 
     void LateUpdate()
     {
-        float input = tongue.RawInput;
-        bool tongueAppeared = previousInput <= 0f && input > 0f;
-        previousInput = input;
-
-        if (!tongueAppeared || Time.unscaledTime < nextAllowedTime) return;
+        string mark = TongueDepthDebug.CurrentMark() ?? "none";
+        if (Time.unscaledTime < nextAllowedTime || !probe.HasHitWithin(photoMaxDistance)) return;
         nextAllowedTime = Time.unscaledTime + minInterval;
 
-        string mark = TongueDepthDebug.CurrentMark() ?? "none";
         string result = probe.DescribeResult();
         string name = $"{savedCount:D3}_t{Time.unscaledTime:F2}_{mark}_{SafeName(result)}";
         savedCount++;
@@ -136,6 +138,11 @@ public class DepthSnapshot : MonoBehaviour
         Pose cameraPose = cameraAccess.GetCameraPose();
         for (int i = 0; i < probe.NearHitCount; i++)
             DrawOnPhoto(pixels, width, height, probe.HitPoints[i], cameraPose, DotColor, dotRadius);
+        for (int cell = 0; cell < probe.RayCount; cell++)
+        {
+            if (IsNearOccludedCell(cell))
+                DrawOnPhoto(pixels, width, height, probe.CellPoint(cell), cameraPose, OccludedColor, dotRadius);
+        }
         if (probe.TipDistance > 0f)
             DrawOnPhoto(pixels, width, height, probe.TipPoint, cameraPose, TipColor, dotRadius * 2);
 
@@ -226,11 +233,23 @@ public class DepthSnapshot : MonoBehaviour
             }
             else outside++;
         }
+        for (int cell = 0; cell < probe.RayCount; cell++)
+        {
+            if (IsNearOccludedCell(cell) && Project(worldToDepth, probe.CellPoint(cell), outW, outH, out int ox, out int oy))
+                DrawDot(pixels, outW, outH, ox, oy, OccludedColor, radius);
+        }
         if (probe.TipDistance > 0f && Project(worldToDepth, probe.TipPoint, outW, outH, out int tx, out int ty))
             DrawDot(pixels, outW, outH, tx, ty, TipColor, radius * 2);
 
         SavePngInBackground(pixels, outW, outH, path);
         return $"深度圖:{width}x{height},藍點在圖內 {inside} 個、圖外 {outside} 個";
+    }
+
+    // 綠點:Meta 判定不可靠(oc)、但距離在拍照範圍內的命中點。只畫出來看,不參與判定
+    bool IsNearOccludedCell(int cell)
+    {
+        float distance = probe.CellOcMouthDistances[cell];
+        return distance > 0f && distance <= photoMaxDistance;
     }
 
     Color32 DepthColor(float meters)
