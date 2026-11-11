@@ -68,8 +68,38 @@ public class TongueTrigger : MonoBehaviour
         rearmBelow = Mathf.Clamp(rearmBelow, 0f, Mathf.Max(0f, catchAbove - 0.01f));
     }
 
+    [Tooltip("遊戲中按下左手搖桿(往下壓)切換吹龍偵測開/關;扳機一直都能用。左手把震一下 = 開、震兩下 = 關")]
+    public bool allowDepthToggle = true;
+
+    float buzzUntil = -1f;
+    float buzzAgainAt = -1f;
+
+    void UpdateDepthToggle()
+    {
+        if (allowDepthToggle && OVRInput.GetDown(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.LTouch))
+        {
+            useDepth = !useDepth;
+            Debug.Log("[TongueTrigger] 吹龍偵測 " + (useDepth ? "開" : "關"));
+            Buzz();
+            buzzAgainAt = useDepth ? -1f : Time.unscaledTime + 0.3f;   // 關 = 震兩下
+        }
+        if (buzzAgainAt > 0f && Time.unscaledTime >= buzzAgainAt) { buzzAgainAt = -1f; Buzz(); }
+        if (buzzUntil > 0f && Time.unscaledTime >= buzzUntil)
+        {
+            buzzUntil = -1f;
+            OVRInput.SetControllerVibration(0f, 0f, OVRInput.Controller.LTouch);
+        }
+    }
+
+    void Buzz()
+    {
+        OVRInput.SetControllerVibration(1f, 0.8f, OVRInput.Controller.LTouch);
+        buzzUntil = Time.unscaledTime + 0.15f;
+    }
+
     void Update()
     {
+        UpdateDepthToggle();
         RawInput = ReadInput();
         float k = 1f - Mathf.Exp(-smoothing * Time.deltaTime);
         Extension = Mathf.Lerp(Extension, RawInput, k);
