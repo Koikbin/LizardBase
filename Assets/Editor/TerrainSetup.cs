@@ -420,6 +420,50 @@ public static class TerrainSetup
     // 有「出生點」標記時:Player 放在這些物件(太空艙)合起來的正中間,往下找到裡面的地板站上去,面向森林
     const float OutsideDoorDistance = 0.6f;   // 出生在艙門外多遠(公尺)
 
+    // 在艙門外 FlatSearchMin~FlatSearchMax 公尺、左右 ±70° 的扇形裡找最平的地面(公尺都是世界座標)。
+    // 平不平 = 周圍 0.1、0.2 m 一圈地面的最大坡度;越遠扣一點分,同樣平時選靠近艙門的。
+    const float FlatSearchMin = 0.4f, FlatSearchMax = 1.6f;
+    const float FlatDistancePenalty = 0.1f;
+
+    static bool FindFlatSpotOutsideDoor(Vector3 doorCenter, Vector3 outDir, Transform bg, HashSet<Transform> exclude, out Vector3 best, out string info)
+    {
+        best = Vector3.zero; info = "";
+        float? GroundY(Vector3 q)
+        {
+            if (!Physics.Raycast(q + Vector3.up * 1.5f, Vector3.down, out RaycastHit h, 4f, DefaultMask, QueryTriggerInteraction.Ignore)) return null;
+            Transform t = h.collider.transform;
+            if (!t.IsChildOf(bg)) return null;
+            foreach (var e in exclude) if (t == e || t.IsChildOf(e)) return null;   // 太空艙本身不算地面
+            return h.point.y;
+        }
+
+        float bestScore = float.MaxValue, bestSlope = 0f, bestDist = 0f, bestAngle = 0f;
+        for (float dist = FlatSearchMin; dist <= FlatSearchMax + 1e-3f; dist += 0.1f)
+        for (float angle = -70f; angle <= 70f; angle += 10f)
+        {
+            Vector3 c = doorCenter + Quaternion.Euler(0f, angle, 0f) * outDir * dist;
+            float? y0 = GroundY(c);
+            if (y0 == null) continue;
+            float slope = 0f;
+            bool complete = true;
+            for (int k = 0; k < 12 && complete; k++)
+                foreach (float r in new[] { 0.1f, 0.2f })
+                {
+                    float? y = GroundY(c + Quaternion.Euler(0f, k * 30f, 0f) * Vector3.forward * r);
+                    if (y == null) { complete = false; break; }
+                    slope = Mathf.Max(slope, Mathf.Abs(y.Value - y0.Value) / r);
+                }
+            if (!complete) continue;
+            Vector3 p = new Vector3(c.x, y0.Value, c.z);
+            if (Physics.CheckCapsule(p + Vector3.up * 0.08f, p + Vector3.up * 0.3f, 0.07f, DefaultMask, QueryTriggerInteraction.Ignore)) continue;   // 身體位置不能卡到東西
+            float score = slope + dist * FlatDistancePenalty;
+            if (score < bestScore) { bestScore = score; best = p + Vector3.up * 0.05f; bestSlope = slope; bestDist = dist; bestAngle = angle; }
+        }
+        if (bestScore == float.MaxValue) return false;
+        info = $" {bestDist:F1} m、偏 {bestAngle:+0;-0}° 最平的地方(坡度約 {Mathf.Atan(bestSlope) * Mathf.Rad2Deg:F0}°)";
+        return true;
+    }
+
     public static bool PlaceAtSpawn(Transform player, GameObject bg, StringBuilder report)
     {
         var marks = LevelMarks.Resolve(bg, LevelMarks.Load(), null);
@@ -441,6 +485,14 @@ public static class TerrainSetup
             {
                 start = db.center + outDir.normalized * OutsideDoorDistance;
                 where = $"艙門 {doors[0].name} 外面 {OutsideDoorDistance} m";
+                // 艙門正外面可能是斜坡(手往低的那邊伸會摸不到地):在艙門外找最平的地方
+                var exclude = new HashSet<Transform>(spawn.Select(m => m.transform));
+                foreach (var d in doors) exclude.Add(d.transform);
+                if (FindFlatSpotOutsideDoor(db.center, outDir.normalized, bg.transform, exclude, out Vector3 flat, out string flatInfo))
+                {
+                    start = flat;
+                    where = $"艙門 {doors[0].name} 外面{flatInfo}";
+                }
             }
         }
 
